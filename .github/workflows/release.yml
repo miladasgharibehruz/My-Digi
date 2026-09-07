@@ -25,6 +25,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pyinstaller
 
@@ -58,6 +59,47 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Updater EXE build failed with exit code $LASTEXITCODE"
           }
+
+      - name: Prepare updater for installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          Write-Host "========================================"
+          Write-Host "Checking PyInstaller output..."
+          Write-Host "========================================"
+
+          if (Test-Path -LiteralPath "dist") {
+            Get-ChildItem -Path "dist" -Recurse -Force |
+              Select-Object FullName, Length
+          }
+          else {
+            throw "dist directory does not exist."
+          }
+
+          $updater = "dist\My Digi Updater.exe"
+
+          if (-not (Test-Path -LiteralPath $updater)) {
+            throw "PyInstaller did not create: $updater"
+          }
+
+          $updaterDir = "dist\My Digi Updater"
+
+          New-Item -ItemType Directory -Path $updaterDir -Force | Out-Null
+
+          Move-Item `
+            -LiteralPath $updater `
+            -Destination "$updaterDir\My Digi Updater.exe" `
+            -Force
+
+          if (-not (Test-Path -LiteralPath "$updaterDir\My Digi Updater.exe")) {
+            throw "Failed to prepare updater for installer."
+          }
+
+          Write-Host "========================================"
+          Write-Host "Updater prepared successfully:"
+          Write-Host "$updaterDir\My Digi Updater.exe"
+          Write-Host "========================================"
 
       - name: Install Inno Setup
         shell: pwsh
@@ -136,7 +178,7 @@ jobs:
             throw "Required file not found: update_config.json"
           }
 
-          & $iscc /Qp "$PWD\MyDigi.iss"
+          & $iscc "$PWD\MyDigi.iss"
 
           if ($LASTEXITCODE -ne 0) {
             throw "Inno Setup failed with exit code $LASTEXITCODE"
@@ -151,7 +193,7 @@ jobs:
 
           if (-not (Test-Path -LiteralPath "installer\My Digi.exe")) {
             Write-Host "Installer directory contents:"
-            
+
             if (Test-Path -LiteralPath "installer") {
               Get-ChildItem -Path "installer" -Recurse -Force |
                 Select-Object FullName, Length
