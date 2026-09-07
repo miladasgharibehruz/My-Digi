@@ -23,7 +23,7 @@ DisableProgramGroupPage=yes
 [Tasks]
 Name: "desktopicon"; Description: "ایجاد میانبر My Digi روی دسکتاپ"; GroupDescription: "میانبرها:"; Flags: unchecked
 [Files]
-Source: "dist\My Digi\My Digi.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\My Digi.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\My Digi Updater\My Digi Updater.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "update_config.json"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
