@@ -11,6 +11,7 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,34 +23,166 @@ jobs:
 
       - name: Install Python packages
         shell: pwsh
-        run: python -m pip install -r requirements.txt pyinstaller
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
 
       - name: Write release update config
         shell: pwsh
         run: |
-          @{ repo = $env:GITHUB_REPOSITORY } | ConvertTo-Json | Set-Content -Encoding UTF8 update_config.json
+          $ErrorActionPreference = 'Stop'
+
+          @{
+            repo = $env:GITHUB_REPOSITORY
+          } | ConvertTo-Json | Set-Content -Encoding UTF8 update_config.json
 
       - name: Build My Digi EXE
         shell: pwsh
-        run: python -m PyInstaller --noconfirm --clean MyDigi.spec
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          python -m PyInstaller --noconfirm --clean MyDigi.spec
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "My Digi EXE build failed with exit code $LASTEXITCODE"
+          }
 
       - name: Build updater EXE
         shell: pwsh
-        run: python -m PyInstaller --noconfirm --clean MyDigiUpdater.spec
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          python -m PyInstaller --noconfirm --clean MyDigiUpdater.spec
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Updater EXE build failed with exit code $LASTEXITCODE"
+          }
 
       - name: Install Inno Setup
         shell: pwsh
-        run: choco install innosetup --no-progress -y
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          choco install innosetup --no-progress -y
 
       - name: Build installer
         shell: pwsh
-        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" MyDigi.iss'
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+
+          Write-Host "========================================"
+          Write-Host "Current directory:"
+          Write-Host (Get-Location)
+          Write-Host "========================================"
+
+          Write-Host "ISCC path:"
+          Write-Host $iscc
+
+          Write-Host "ISCC exists:"
+          Write-Host (Test-Path -LiteralPath $iscc)
+
+          Write-Host "MyDigi.iss exists:"
+          Write-Host (Test-Path -LiteralPath "MyDigi.iss")
+
+          Write-Host "========================================"
+          Write-Host "Checking required installer files..."
+          Write-Host "========================================"
+
+          Write-Host "dist\My Digi.exe:"
+          Write-Host (Test-Path -LiteralPath "dist\My Digi.exe")
+
+          Write-Host "dist\My Digi Updater\My Digi Updater.exe:"
+          Write-Host (Test-Path -LiteralPath "dist\My Digi Updater\My Digi Updater.exe")
+
+          Write-Host "update_config.json:"
+          Write-Host (Test-Path -LiteralPath "update_config.json")
+
+          Write-Host "========================================"
+          Write-Host "dist contents:"
+          Write-Host "========================================"
+
+          if (Test-Path -LiteralPath "dist") {
+            Get-ChildItem -Path "dist" -Recurse -Force |
+              Select-Object FullName, Length
+          }
+          else {
+            Write-Host "WARNING: dist directory does not exist."
+          }
+
+          Write-Host "========================================"
+          Write-Host "Running Inno Setup..."
+          Write-Host "========================================"
+
+          if (-not (Test-Path -LiteralPath $iscc)) {
+            throw "Inno Setup compiler not found: $iscc"
+          }
+
+          if (-not (Test-Path -LiteralPath "MyDigi.iss")) {
+            throw "MyDigi.iss not found in $PWD"
+          }
+
+          if (-not (Test-Path -LiteralPath "dist\My Digi.exe")) {
+            throw "Required file not found: dist\My Digi.exe"
+          }
+
+          if (-not (Test-Path -LiteralPath "dist\My Digi Updater\My Digi Updater.exe")) {
+            throw "Required file not found: dist\My Digi Updater\My Digi Updater.exe"
+          }
+
+          if (-not (Test-Path -LiteralPath "update_config.json")) {
+            throw "Required file not found: update_config.json"
+          }
+
+          & $iscc /Qp "$PWD\MyDigi.iss"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Verify installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          Write-Host "Checking installer output..."
+
+          if (-not (Test-Path -LiteralPath "installer\My Digi.exe")) {
+            Write-Host "Installer directory contents:"
+            
+            if (Test-Path -LiteralPath "installer") {
+              Get-ChildItem -Path "installer" -Recurse -Force |
+                Select-Object FullName, Length
+            }
+            else {
+              Write-Host "installer directory does not exist."
+            }
+
+            throw "Installer was not created: installer\My Digi.exe"
+          }
+
+          Write-Host "Installer successfully created:"
+          Get-Item "installer\My Digi.exe" |
+            Select-Object FullName, Length
 
       - name: Create SHA-256 file
         shell: pwsh
         run: |
-          $hash = (Get-FileHash "installer\My Digi.exe" -Algorithm SHA256).Hash.ToLower()
-          Set-Content -Encoding ascii "installer\My Digi.exe.sha256" "$hash  My Digi.exe"
+          $ErrorActionPreference = 'Stop'
+
+          $hash = (
+            Get-FileHash "installer\My Digi.exe" -Algorithm SHA256
+          ).Hash.ToLower()
+
+          Set-Content `
+            -Encoding ascii `
+            "installer\My Digi.exe.sha256" `
+            "$hash  My Digi.exe"
+
+          Write-Host "SHA-256:"
+          Write-Host $hash
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
