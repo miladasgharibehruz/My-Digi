@@ -8,13 +8,22 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, font as tkfont
 import math, random
 
+# Windows taskbar identity: set this before any GUI/webview window is created.
+# This prevents Windows from treating the window as a generic host/browser app.
+if os.name == "nt":
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Mabouth.MyDigi")
+    except Exception:
+        pass
+
 try:
     from PIL import Image, ImageTk, ImageGrab
 except ImportError:
     Image = ImageTk = ImageGrab = None
 
 APP_VERSION = "2.0.0"
-UPDATE_REPO = ""  # Fallback; packaged builds can ship update_config.json with the GitHub repo.
+UPDATE_REPO = "miladasgharibehruz/My-Digi"  # Built-in fallback; release builds may override this via update_config.json.
 UPDATE_API_BASE = "https://api.github.com"
 APP_DIR = Path(os.environ.get("APPDATA") or Path.home()) / "My Digi"
 DATA_FILE = APP_DIR / "products.json"
@@ -3422,7 +3431,9 @@ def _github_repo():
         cfg = _install_dir() / "update_config.json"
         if cfg.exists():
             data = json.loads(cfg.read_text(encoding="utf-8"))
-            repo = str(data.get("repo") or repo).strip().strip("/")
+            configured_repo = str(data.get("repo") or "").strip().strip("/")
+            if configured_repo:
+                repo = configured_repo
     except Exception:
         pass
     return repo
@@ -3432,27 +3443,38 @@ def _github_latest_release():
     repo = _github_repo()
     if not repo or "/" not in repo:
         return None, "انتشار آنلاین GitHub هنوز برای این نسخه تنظیم نشده است."
-    url = f"{UPDATE_API_BASE}/repos/{repo}/releases/latest"
-    req = Request(url, headers={"User-Agent":"My-Digi-Updater/2.0", "Accept":"application/vnd.github+json"})
-    with urlopen(req, timeout=12) as r:
-        data = json.loads(r.read().decode("utf-8"))
-    tag = str(data.get("tag_name") or "").strip().lstrip("vV")
-    body = str(data.get("body") or "").strip()
-    assets = data.get("assets") or []
-    installer = None
-    for a in assets:
-        if str(a.get("name") or "").strip().lower() == "my digi.exe":
-            digest = str(a.get("digest") or "")
-            installer = {"name": a.get("name"), "url": a.get("browser_download_url"), "size": a.get("size"), "sha256": digest.split(":",1)[1] if digest.startswith("sha256:") else digest}
-            break
-    if not installer:
-        for a in assets:
-            nm = str(a.get("name") or "").lower()
-            if nm.endswith(".exe") and "my digi" in nm:
-                digest = str(a.get("digest") or "")
-                installer = {"name": a.get("name"), "url": a.get("browser_download_url"), "size": a.get("size"), "sha256": digest.split(":",1)[1] if digest.startswith("sha256:") else digest}
-                break
-    return {"version": tag, "body": body, "html_url": data.get("html_url"), "installer": installer, "published_at": data.get("published_at")}, None
+    headers={"User-Agent":"My-Digi-Updater/2.0"}
+
+    # Use GitHub's normal releases page instead of the REST API. This avoids
+    # API 404/rate-limit problems on machines where the GitHub API is filtered
+    # or unavailable, while still using GitHub's own stable-release redirect.
+    latest_url = f"https://github.com/{repo}/releases/latest"
+    req = Request(latest_url, headers=headers)
+    with urlopen(req, timeout=15) as r:
+        final_url = r.geturl()
+        html = r.read().decode("utf-8", "replace")
+    m = re.search(r"/releases/tag/([^\"?#/]+)", final_url)
+    if not m:
+        m = re.search(r"/releases/tag/([^\"?#/]+)", html)
+    if not m:
+        return None, "هنوز نسخه منتشرشده‌ای در GitHub پیدا نشد."
+    from urllib.parse import unquote
+    tag_raw = unquote(m.group(1))
+    tag = tag_raw.lstrip("vV")
+
+    # Find the downloadable EXE link on the release page.
+    installer_url = None
+    for mm in re.finditer(r'href=[\"\']([^\"\']*?/releases/download/[^\"\']*?My(?:%20|\s)+Digi(?:%20|\s)+exe[^\"\']*)', html, re.I):
+        installer_url = mm.group(1).replace("&amp;", "&")
+        break
+    if installer_url and installer_url.startswith("/"):
+        installer_url = "https://github.com" + installer_url
+    if not installer_url:
+        installer_url = f"https://github.com/{repo}/releases/download/{tag_raw}/My%20Digi.exe"
+
+    installer = {"name":"My Digi.exe", "url":installer_url, "size":None, "sha256":""}
+    release_page = f"https://github.com/{repo}/releases/tag/{tag_raw}"
+    return {"version": tag, "body":"", "html_url":release_page, "installer":installer, "published_at":None}, None
 
 
 def _version_tuple(v):
@@ -3941,7 +3963,31 @@ def launch_graphic_web():
     threading.Thread(target=httpd.serve_forever,daemon=True).start()
     url=f"http://127.0.0.1:{actual_port}/"
     print(f"My Digi {APP_VERSION} graphical UI: {url}")
-    # Prefer an app-style Chromium/Edge window on Windows.
+
+    # Host the main HTML inside pywebview instead of an external Edge/Chrome
+    # app window.  This keeps the same HTML/CSS/JS UI but makes the top-level
+    # window belong to My Digi itself, so Windows can use the EXE icon in the
+    # taskbar instead of the browser's globe icon.
+    try:
+        import webview
+        # On Windows the application icon is taken from the bundled executable.
+        # Do not attach a fragile native before_show hook here: if that hook fails,
+        # the old code fell through to Edge --app and Windows showed the browser icon.
+        webview.create_window(
+            f"My Digi {APP_VERSION}",
+            url=url,
+            width=1500,
+            height=900,
+            min_size=(1100,700),
+            background_color="#050b17",
+            text_select=True,
+        )
+        webview.start(gui="edgechromium")
+        return
+    except Exception as exc:
+        print(f"pywebview main window failed; falling back to browser app window: {exc}")
+
+    # Fallback for systems where WebView2/pywebview is unavailable.
     candidates=[
         Path(os.environ.get("PROGRAMFILES",""))/"Microsoft/Edge/Application/msedge.exe",
         Path(os.environ.get("PROGRAMFILES(X86)",""))/"Microsoft/Edge/Application/msedge.exe",
@@ -3952,8 +3998,56 @@ def launch_graphic_web():
         for exe in candidates:
             try:
                 if exe.exists():
-                    _subprocess.Popen([str(exe),f"--app={url}"])
-                    launched=True; break
+                    proc = _subprocess.Popen([str(exe), f"--app={url}", f"--app-name=My Digi"], cwd=str(_install_dir()), creationflags=getattr(_subprocess,"CREATE_NO_WINDOW",0))
+                    launched=True
+                    # pywebview cannot initialize in this frozen build because
+                    # pythonnet initializes twice. Keep the stable Edge app
+                    # window, but replace its window/taskbar icon with the
+                    # actual My Digi ICO using the Win32 window icon message.
+                    try:
+                        import ctypes as _ct
+                        from ctypes import wintypes as _wt
+                        _user32 = _ct.windll.user32
+                        _kernel32 = _ct.windll.kernel32
+                        _IMAGE_ICON = 1
+                        _LR_LOADFROMFILE = 0x00000010
+                        _LR_DEFAULTSIZE = 0x00000040
+                        _WM_SETICON = 0x0080
+                        _ICON_SMALL = 0
+                        _ICON_BIG = 1
+                        icon_file = _install_dir() / "My Digi.ico"
+                        h_big = _user32.LoadImageW(None, str(icon_file), _IMAGE_ICON, 32, 32, _LR_LOADFROMFILE | _LR_DEFAULTSIZE) if icon_file.exists() else 0
+                        h_small = _user32.LoadImageW(None, str(icon_file), _IMAGE_ICON, 16, 16, _LR_LOADFROMFILE | _LR_DEFAULTSIZE) if icon_file.exists() else 0
+                        deadline = time.time() + 8.0
+                        while time.time() < deadline and (not h_big or not h_small):
+                            time.sleep(0.1)
+                        if h_big or h_small:
+                            @_ct.WINFUNCTYPE(_ct.c_bool, _wt.HWND, _wt.LPARAM)
+                            def _enum_icon(hwnd, lparam):
+                                try:
+                                    if not _user32.IsWindowVisible(hwnd):
+                                        return True
+                                    n = _user32.GetWindowTextLengthW(hwnd)
+                                    if not n:
+                                        return True
+                                    buf = _ct.create_unicode_buffer(n + 1)
+                                    _user32.GetWindowTextW(hwnd, buf, n + 1)
+                                    title = buf.value.strip()
+                                    if title.startswith("My Digi"):
+                                        if h_big:
+                                            _user32.SendMessageW(hwnd, _WM_SETICON, _ICON_BIG, h_big)
+                                        if h_small:
+                                            _user32.SendMessageW(hwnd, _WM_SETICON, _ICON_SMALL, h_small)
+                                        _user32.InvalidateRect(hwnd, None, True)
+                                except Exception:
+                                    pass
+                                return True
+                            for _ in range(80):
+                                _user32.EnumWindows(_enum_icon, 0)
+                                time.sleep(0.1)
+                    except Exception as icon_exc:
+                        print(f"Taskbar icon adjustment failed: {icon_exc}")
+                    break
             except Exception: pass
     if not launched:
         try: _webbrowser.open(url)
