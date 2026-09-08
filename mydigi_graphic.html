@@ -323,7 +323,7 @@ body{font-size:14px}
   <div class="menu-spacer"></div>
   <div class="menu-meta" aria-label="زمان و نسخه">
     <div id="menuClock" class="menu-clock">—</div>
-    <div id="menuVersion" class="menu-version">1.9</div>
+    <div id="menuVersion" class="menu-version">2.0</div>
   </div>
 </aside>
 <section class="center">
@@ -617,7 +617,7 @@ function openConfirm(){const ids=S.items.filter(x=>x.selected).map(x=>x.uuid);if
 function closeConfirm(){document.getElementById('confirmModal').classList.remove('open');S.deletePending=null}
 async function confirmDeleteSelected(){const ids=S.deletePending||[];if(!ids.length)return;try{await api('/api/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({uuids:ids})});closeConfirm();await load();toast(`${fa(ids.length)} کالا حذف شد`)}catch(e){toast(e.message)}}
 async function removeSelected(){openConfirm()}
-function openImage(uid){const x=S.items.find(a=>a.uuid===uid);if(!x){toast('کالا پیدا نشد');return}const modal=document.getElementById('imageModal');const img=document.getElementById('largeImage');const cap=document.getElementById('imageCaption');if(!modal||!img)return;modal.classList.add('open');img.removeAttribute('src');img.alt=x.title||'تصویر کالا';img.style.display='block';cap.textContent='در حال دریافت لینک اولین تصویر واقعی کالا…';fetch(`/api/product-image-url/${encodeURIComponent(uid)}?t=${Date.now()}`,{cache:'no-store'}).then(async r=>{const j=await r.json();if(!r.ok||!j.ok||!j.url)throw new Error(j.error||'آدرس تصویر پیدا نشد');img.onload=()=>{cap.textContent=`تصویر کالا — ${img.naturalWidth} × ${img.naturalHeight} پیکسل`;};img.onerror=()=>{img.style.display='none';cap.textContent='لینک تصویر پیدا شد ولی مرورگر نتوانست خود تصویر را باز کند.'};img.src=j.url}).catch(e=>{img.style.display='none';cap.textContent='دریافت لینک تصویر واقعی کالا انجام نشد.'})}
+function openImage(uid){const x=S.items.find(a=>a.uuid===uid);if(!x){toast('کالا پیدا نشد');return}const modal=document.getElementById('imageModal');const img=document.getElementById('largeImage');const cap=document.getElementById('imageCaption');if(!modal||!img)return;modal.classList.add('open');img.removeAttribute('src');img.alt=x.title||'تصویر کالا';img.style.display='block';cap.textContent='در حال دریافت تصویر واقعی کالا…';img.onload=()=>{cap.textContent=`تصویر کالا — ${img.naturalWidth} × ${img.naturalHeight} پیکسل`;};img.onerror=()=>{img.style.display='none';cap.textContent='دریافت تصویر کالا از دیجی‌کالا ناموفق بود.'};img.src=`/api/product-image/${encodeURIComponent(uid)}?t=${Date.now()}`}
 function closeImage(){const m=document.getElementById('imageModal');if(m)m.classList.remove('open');const img=document.getElementById('largeImage');if(img)img.removeAttribute('src')}
 function openProduct(id){window.open(`https://www.digikala.com/product/dkp-${id}/`,'_blank')}
 async function copyProductLink(uid){const x=S.items.find(a=>a.uuid===uid);if(!x)return;const link=x.url||`https://www.digikala.com/product/dkp-${x.id}/`;try{await navigator.clipboard.writeText(link);toast('لینک محصول کپی شد')}catch(e){const ta=document.createElement('textarea');ta.value=link;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();toast('لینک محصول کپی شد')}}
