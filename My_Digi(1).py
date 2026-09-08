@@ -426,28 +426,54 @@ def extract_id(url):
 
 
 def first_image_url(obj):
-    """Return Digikala's primary product image from the explicit API shape.
+    """Extract a real Digikala product image from the known image shapes.
 
-    Current product responses expose the first real product image at
-    images.main.url[0] (with webp_url as a fallback). We intentionally do not
-    recursively scan arbitrary URLs, which can select UI assets/icons.
+    Digikala has used more than one image shape across product-detail
+    responses.  Prefer product images only; never pick arbitrary UI/icon URLs.
     """
     if not isinstance(obj, dict):
         return None
+
+    def url_from_value(value):
+        if isinstance(value, str):
+            value = value.strip()
+            return value if value.startswith(("http://", "https://")) else None
+        if isinstance(value, (list, tuple)):
+            for v in value:
+                found = url_from_value(v)
+                if found:
+                    return found
+        if isinstance(value, dict):
+            # Common image object forms.
+            for k in ("url", "webp_url", "image_url", "imageUrl", "src", "source"):
+                found = url_from_value(value.get(k))
+                if found:
+                    return found
+        return None
+
     images = obj.get("images")
-    if not isinstance(images, dict):
-        return None
-    main = images.get("main")
-    if not isinstance(main, dict):
-        return None
-    for key in ("url", "webp_url"):
-        values = main.get(key)
-        if isinstance(values, (list, tuple)):
-            for value in values:
-                if isinstance(value, str) and value.strip().startswith(("http://", "https://")):
-                    return value.strip()
-        elif isinstance(values, str) and values.strip().startswith(("http://", "https://")):
-            return values.strip()
+    if isinstance(images, dict):
+        # Current/common product-detail shape.
+        for key in ("main", "main_images", "images", "image"):
+            found = url_from_value(images.get(key))
+            if found:
+                return found
+        # Some responses put the URL directly under images.
+        for key in ("url", "webp_url", "image_url", "imageUrl"):
+            found = url_from_value(images.get(key))
+            if found:
+                return found
+    else:
+        found = url_from_value(images)
+        if found:
+            return found
+
+    # Some Digikala wrappers expose the primary image directly.
+    for key in ("image_url", "imageUrl", "main_image", "main_image_url", "primary_image_url"):
+        found = url_from_value(obj.get(key))
+        if found:
+            return found
+
     return None
 
 
@@ -457,6 +483,7 @@ def fetch_product(product_id):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
+        "Referer": "https://www.digikala.com/",
     })
     try:
         with urlopen(req, timeout=20) as r:
@@ -480,13 +507,35 @@ def fetch_product(product_id):
         reason = getattr(exc, "reason", exc)
         raise RuntimeError(f"خطای اتصال به اینترنت/دیجی‌کالا: {reason}") from exc
 
-    root = data.get("data", {})
+    if not isinstance(data, dict):
+        raise RuntimeError("ساختار پاسخ دیجی‌کالا معتبر نیست.")
+
+    root = data.get("data", data)
+    if not isinstance(root, dict):
+        raise RuntimeError("بخش data پاسخ دیجی‌کالا معتبر نیست.")
     product = root.get("product", root)
-    title = product.get("title_fa") or product.get("title") or f"محصول {product_id}"
+    if not isinstance(product, dict):
+        raise RuntimeError("اطلاعات محصول در پاسخ دیجی‌کالا پیدا نشد.")
+
+    def first_text(*values):
+        for value in values:
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    # Product title must come from the product-level metadata, not from a
+    # seller/variant title.  Keep a few known fallback shapes for API changes.
+    seo = product.get("seo") if isinstance(product.get("seo"), dict) else {}
+    title = first_text(
+        product.get("title_fa"), product.get("title"), product.get("name_fa"),
+        product.get("name"), seo.get("title"), seo.get("title_fa")
+    )
+    if not title:
+        raise RuntimeError("نام واقعی محصول در پاسخ دیجی‌کالا پیدا نشد.")
+
     image_url = first_image_url(product)
 
     def number_value(value):
-        """Convert Digikala numeric values, including numeric strings, to int."""
         if isinstance(value, bool):
             return None
         if isinstance(value, (int, float)):
@@ -515,15 +564,14 @@ def fetch_product(product_id):
     def get_selling_price(obj):
         if not isinstance(obj, dict):
             return None
-        price_obj = obj.get("price")
         candidates = []
+        price_obj = obj.get("price")
         if isinstance(price_obj, dict):
             candidates.extend([
                 price_obj.get("selling_price"), price_obj.get("sellingPrice"),
                 price_obj.get("final_price"), price_obj.get("finalPrice"),
                 price_obj.get("sale_price"), price_obj.get("salePrice"),
                 price_obj.get("discounted_price"), price_obj.get("discountedPrice"),
-                price_obj.get("value"),
             ])
         candidates.extend([
             obj.get("selling_price"), obj.get("sellingPrice"),
@@ -539,67 +587,88 @@ def fetch_product(product_id):
                 return n
         return None
 
-    # Digikala's product-detail response exposes seller offers through
-    # variant-like objects.  Some responses use a list while others nest
-    # the variants/offers one level deeper, so collect every seller+price
-    # pair recursively instead of assuming one exact JSON shape.
-    offers = []
-
-    def collect_offers(obj):
-        if isinstance(obj, dict):
-            seller, seller_id = get_seller_info(obj.get("seller"))
-            raw = get_selling_price(obj)
-            if raw is not None and seller:
-                offers.append((raw, seller, seller_id))
-            for value in obj.values():
-                if isinstance(value, (dict, list)):
-                    collect_offers(value)
-        elif isinstance(obj, list):
-            for value in obj:
-                collect_offers(value)
-
-    collect_offers(product)
-
-    # Also explicitly inspect the known variant container.
+    # First use the documented/current product variant structure.  Product
+    # detail wrappers expose seller + price on variants; this is much safer
+    # than treating every nested {seller, price} pair as an independent offer.
     variants = product.get("variants")
-    if variants is not None:
-        collect_offers(variants)
+    if isinstance(variants, dict):
+        for key in ("items", "data", "variants", "results"):
+            if isinstance(variants.get(key), list):
+                variants = variants[key]
+                break
+    if not isinstance(variants, list):
+        variants = []
 
-    # Remove duplicate observations and keep the cheapest offer per seller.
-    # This prevents repeated JSON references for the same marketplace seller
-    # from incorrectly becoming the "second seller".
+    offers = []
+    for variant in variants:
+        if not isinstance(variant, dict):
+            continue
+        seller_obj = variant.get("seller")
+        seller, seller_id = get_seller_info(seller_obj)
+        raw = get_selling_price(variant)
+        if raw is not None and seller:
+            offers.append((raw, seller, seller_id))
+
+    # Fallback: recursively inspect only when the explicit variants structure
+    # did not yield offers.  This keeps compatibility with older responses.
+    if not offers:
+        def collect_legacy(obj):
+            if isinstance(obj, dict):
+                seller, seller_id = get_seller_info(obj.get("seller"))
+                raw = get_selling_price(obj)
+                if raw is not None and seller:
+                    offers.append((raw, seller, seller_id))
+                for value in obj.values():
+                    if isinstance(value, (dict, list)):
+                        collect_legacy(value)
+            elif isinstance(obj, list):
+                for value in obj:
+                    collect_legacy(value)
+        collect_legacy(product)
+
+    # Default variant is a valid fallback for the current price, but it must
+    # not be interpreted as proof that the product has only one seller.
+    if not offers:
+        default_variant = product.get("default_variant")
+        if isinstance(default_variant, dict):
+            raw = get_selling_price(default_variant)
+            seller, seller_id = get_seller_info(default_variant.get("seller"))
+            if raw is not None:
+                offers.append((raw, seller or "—", seller_id))
+
+    # Deduplicate by seller ID/name and retain each seller's cheapest offer.
     best_by_seller = {}
     anonymous = []
     for raw, seller, seller_id in offers:
         if raw < 1000:
             continue
-        seller_key = ("id", str(seller_id)) if seller_id is not None else ("name", seller.strip())
-        if seller_key[1]:
-            prev = best_by_seller.get(seller_key)
+        if seller_id is not None:
+            key = ("id", str(seller_id))
+        else:
+            key = ("name", normalize_text(seller))
+        if key[1]:
+            prev = best_by_seller.get(key)
             if prev is None or raw < prev[0]:
-                best_by_seller[seller_key] = (raw, seller)
+                best_by_seller[key] = (raw, seller)
         else:
             anonymous.append((raw, seller))
 
     unique = list(best_by_seller.values()) + anonymous
-
-    # If seller data is unavailable in a nested offer, fall back to the
-    # product's default variant so the original working price still appears.
-    if not unique:
-        default_variant = product.get("default_variant")
-        if isinstance(default_variant, dict):
-            raw = get_selling_price(default_variant)
-            seller, _ = get_seller_info(default_variant.get("seller"))
-            if raw:
-                unique = [(raw, seller or "—")]
-
-    if not unique:
-        return title, None, None, None, None, True, image_url
-
     ranked = sorted(unique, key=lambda x: x[0])
+
+    # Determine availability independently from seller count.
+    status = str(product.get("status") or "").lower()
+    default_variant = product.get("default_variant") if isinstance(product.get("default_variant"), dict) else {}
+    variant_status = str(default_variant.get("status") or "").lower()
+    is_marketable = status in ("marketable", "available", "active") or variant_status in ("marketable", "available", "active")
+    unavailable = not bool(ranked) and not is_marketable
+
+    if not ranked:
+        # Preserve the real title and image even when price/seller data is absent.
+        return title, None, None, None, None, unavailable, image_url
+
     best_raw, best_seller = ranked[0]
     second_raw, second_seller = ranked[1] if len(ranked) > 1 else (None, None)
-
     price = best_raw // 10 if best_raw >= 10000 else best_raw
     second_price = second_raw // 10 if second_raw is not None and second_raw >= 10000 else second_raw
 
@@ -3506,6 +3575,15 @@ class _MyDigiHandler(BaseHTTPRequestHandler):
             html=(Path(__file__).with_name("mydigi_graphic.html")).read_text(encoding="utf-8").replace("__APP_VERSION__",APP_VERSION)
             raw=html.encode("utf-8")
             self.send_response(200); self.send_header("Content-Type","text/html; charset=utf-8"); self.send_header("Content-Length",str(len(raw))); self.end_headers(); self.wfile.write(raw); return
+        if path=="/calculator":
+            # Serve the bundled calculator from the same local My Digi web app.
+            # It is opened by Edge/Chrome in app mode, so no second My Digi/Python
+            # process is needed and the calculator appears as a native app window.
+            import base64, gzip
+            raw=gzip.decompress(base64.b64decode(_CALCULATOR_B64_GZIP))
+            html=raw.decode("utf-8").replace("__APP_VERSION__",APP_VERSION)
+            raw=html.encode("utf-8")
+            self.send_response(200); self.send_header("Content-Type","text/html; charset=utf-8"); self.send_header("Content-Length",str(len(raw))); self.end_headers(); self.wfile.write(raw); return
         if path=="/api/state": self._json(200,_web_state()); return
         if path=="/api/accounting": self._json(200,_accounting_state()); return
         if path=="/api/settings": self._json(200,{"ok":True,"settings":load_settings()}); return
@@ -3573,6 +3651,50 @@ class _MyDigiHandler(BaseHTTPRequestHandler):
                 try: save_products(items)
                 except Exception: pass
             return self._json(200,{"ok":True,"url":image_url,"product_id":product_id})
+        if path.startswith("/api/product-image/"):
+            parts=path.split("/")
+            uid=unquote(parts[-1]).strip() if len(parts)>3 else ""
+            if not uid:
+                return self._json(400,{"ok":False,"error":"شناسه تصویر معتبر نیست."})
+            items=load_products()
+            item=next((x for x in items if str(x.get("uuid") or "").strip()==uid),None)
+            if not item:
+                return self._json(404,{"ok":False,"error":"محصول پیدا نشد."})
+            product_id=str(item.get("id") or "").strip()
+            if not product_id:
+                return self._json(404,{"ok":False,"error":"شناسه محصول دیجی‌کالا ثبت نشده است."})
+            try:
+                image_url=item.get("image_url")
+                if not image_url:
+                    api=f"https://api.digikala.com/v2/product/{product_id}/"
+                    req=Request(api,headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36","Accept":"application/json","Referer":"https://www.digikala.com/"})
+                    with urlopen(req,timeout=20) as r:
+                        raw=r.read(6*1024*1024)
+                    data=json.loads(raw.decode("utf-8"))
+                    root=data.get("data",{}) if isinstance(data,dict) else {}
+                    product=root.get("product",root) if isinstance(root,dict) else {}
+                    image_url=first_image_url(product)
+                    if image_url:
+                        item["image_url"]=image_url
+                        try: save_products(items)
+                        except Exception: pass
+                if not image_url:
+                    return self._json(404,{"ok":False,"error":"آدرس تصویر کالا پیدا نشد."})
+                req=Request(image_url,headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36","Referer":"https://www.digikala.com/"})
+                with urlopen(req,timeout=30) as r:
+                    image_raw=r.read(12*1024*1024)
+                    content_type=r.headers.get("Content-Type") or "image/jpeg"
+                if not content_type.startswith("image/"):
+                    content_type="image/jpeg"
+                self.send_response(200)
+                self.send_header("Content-Type",content_type)
+                self.send_header("Cache-Control","public, max-age=3600")
+                self.send_header("Content-Length",str(len(image_raw)))
+                self.end_headers()
+                self.wfile.write(image_raw)
+                return
+            except Exception as exc:
+                return self._json(502,{"ok":False,"error":f"دریافت تصویر کالا انجام نشد: {exc}"})
         self._json(404,{"error":"Not found"})
     def do_POST(self):
         global WEB_CHECK_PROGRESS
@@ -3764,12 +3886,33 @@ class _MyDigiHandler(BaseHTTPRequestHandler):
                     return self._json(500,{"ok":False,"error":f"باز کردن مسیر انجام نشد: {exc}"})
             if path=="/api/open-calculator":
                 try:
-                    # The graphical UI may itself be running under Python 3.14t.
-                    # Always resolve a regular CPython interpreter for the calculator
-                    # before spawning it, so direct .py launch behaves like the BAT launcher.
-                    pyexe = _regular_python_executable()
-                    _subprocess.Popen([pyexe, str(Path(__file__).resolve()), "--calculator"], cwd=str(Path(__file__).resolve().parent))
-                    return self._json(200,{"ok":True})
+                    # Open the calculator as a second My Digi app window using the
+                    # same local HTTP server as the main UI. This keeps the calculator
+                    # inside the My Digi app experience and avoids launching another
+                    # copy of the My Digi executable.
+                    port=self.server.server_address[1]
+                    url=f"http://127.0.0.1:{port}/calculator"
+                    candidates=[
+                        Path(os.environ.get("PROGRAMFILES",""))/"Microsoft/Edge/Application/msedge.exe",
+                        Path(os.environ.get("PROGRAMFILES(X86)",""))/"Microsoft/Edge/Application/msedge.exe",
+                        Path(os.environ.get("LOCALAPPDATA",""))/"Microsoft/Edge/Application/msedge.exe",
+                        Path(os.environ.get("LOCALAPPDATA",""))/"Google/Chrome/Application/chrome.exe",
+                        Path(os.environ.get("PROGRAMFILES",""))/"Google/Chrome/Application/chrome.exe",
+                        Path(os.environ.get("PROGRAMFILES(X86)",""))/"Google/Chrome/Application/chrome.exe",
+                    ]
+                    launched=False
+                    if os.name=="nt":
+                        for exe in candidates:
+                            try:
+                                if exe.exists():
+                                    _subprocess.Popen([str(exe),f"--app={url}"], cwd=str(_install_dir()), creationflags=getattr(_subprocess,"CREATE_NO_WINDOW",0))
+                                    launched=True
+                                    break
+                            except Exception:
+                                pass
+                    if not launched:
+                        _webbrowser.open_new(url)
+                    return self._json(200,{"ok":True,"url":url})
                 except Exception as exc:
                     return self._json(500,{"ok":False,"error":f"باز کردن ماشین حساب انجام نشد: {exc}"})
             if path=="/api/open-reference":
