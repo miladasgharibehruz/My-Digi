@@ -3578,6 +3578,121 @@ def _update_state():
     backups.sort(reverse=True)
     return {"current": APP_VERSION, "backups": backups[:3], "can_rollback": bool(backups)}
 
+
+MANUAL_BACKUP_DIR = APP_DIR / "backups"
+BACKUP_EXCLUDES = {"versions", "backups", "Updater", "update.log", "startup-error.log"}
+
+
+def _safe_backup_name(prefix="manual"):
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    base = f"{prefix}__{stamp}"
+    candidate = base
+    counter = 1
+    while (MANUAL_BACKUP_DIR / candidate).exists():
+        candidate = f"{base}-{counter}"
+        counter += 1
+    return candidate
+
+
+def _snapshot_user_data(prefix="manual"):
+    MANUAL_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    name = _safe_backup_name(prefix)
+    root = MANUAL_BACKUP_DIR / name
+    data_dir = root / "data"
+    data_dir.mkdir(parents=True, exist_ok=False)
+    copied = 0
+    try:
+        for item in APP_DIR.iterdir():
+            if item.name in BACKUP_EXCLUDES:
+                continue
+            target = data_dir / item.name
+            if item.is_dir():
+                shutil.copytree(item, target)
+                copied += sum(1 for p in target.rglob("*") if p.is_file())
+            elif item.is_file():
+                shutil.copy2(item, target)
+                copied += 1
+        manifest = {
+            "type": prefix,
+            "app_version": APP_VERSION,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "files": copied,
+        }
+        (root / "backup.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        return root
+    except Exception:
+        shutil.rmtree(root, ignore_errors=True)
+        raise
+
+
+def _backup_entries():
+    result = []
+    sources = [("manual", MANUAL_BACKUP_DIR), ("update", APP_DIR / "versions")]
+    for kind, parent in sources:
+        if not parent.exists():
+            continue
+        for root in parent.iterdir():
+            data_dir = root / "data"
+            if not root.is_dir() or not data_dir.is_dir():
+                continue
+            manifest = {}
+            try:
+                manifest = json.loads((root / "backup.json").read_text(encoding="utf-8"))
+            except Exception:
+                pass
+            files = sum(1 for p in data_dir.rglob("*") if p.is_file())
+            size = sum(p.stat().st_size for p in data_dir.rglob("*") if p.is_file())
+            created = manifest.get("created_at") or datetime.fromtimestamp(root.stat().st_mtime).isoformat(timespec="seconds")
+            result.append({
+                "id": f"{kind}:{root.name}",
+                "kind": kind,
+                "name": root.name,
+                "version": manifest.get("app_version") or manifest.get("version") or "—",
+                "created_at": created,
+                "files": files,
+                "size": size,
+            })
+    result.sort(key=lambda x: x["created_at"], reverse=True)
+    return result
+
+
+def _resolve_data_backup(backup_id):
+    kind, separator, name = str(backup_id or "").partition(":")
+    if separator != ":" or kind not in {"manual", "update"} or not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        raise ValueError("شناسه پشتیبان معتبر نیست.")
+    parent = MANUAL_BACKUP_DIR if kind == "manual" else APP_DIR / "versions"
+    root = parent / name
+    data_dir = root / "data"
+    if not root.is_dir() or not data_dir.is_dir():
+        raise FileNotFoundError("نسخه پشتیبان اطلاعات پیدا نشد.")
+    return root, data_dir
+
+
+def _restore_user_data(backup_id):
+    _, source = _resolve_data_backup(backup_id)
+    safety = _snapshot_user_data("before-restore")
+    restored = 0
+    for item in source.iterdir():
+        target = APP_DIR / item.name
+        if item.is_dir():
+            temp = APP_DIR / f".{item.name}.restore-{uuid.uuid4().hex}"
+            shutil.copytree(item, temp)
+            if target.exists():
+                shutil.rmtree(target)
+            temp.rename(target)
+            restored += sum(1 for p in target.rglob("*") if p.is_file())
+        elif item.is_file():
+            temp = APP_DIR / f".{item.name}.restore-{uuid.uuid4().hex}"
+            shutil.copy2(item, temp)
+            os.replace(temp, target)
+            restored += 1
+    return safety, restored
+
+
+def _delete_data_backup(backup_id):
+    root, _ = _resolve_data_backup(backup_id)
+    shutil.rmtree(root)
+
 def _regular_python_executable():
     """Return a normal GIL-enabled CPython executable for the native calculator."""
     if os.name != "nt" or _is_frozen_app():
@@ -3685,6 +3800,7 @@ class _MyDigiHandler(BaseHTTPRequestHandler):
         if path=="/api/accounting": self._json(200,_accounting_state()); return
         if path=="/api/settings": self._json(200,{"ok":True,"settings":load_settings()}); return
         if path=="/api/update-state": self._json(200,{"ok":True,**_update_state()}); return
+        if path=="/api/backups": self._json(200,{"ok":True,"backups":_backup_entries()}); return
         if path=="/api/check-update":
             try:
                 rel, err = _github_latest_release()
@@ -3818,6 +3934,22 @@ class _MyDigiHandler(BaseHTTPRequestHandler):
                 _launch_updater("rollback", ["--backup", str(backup)])
                 threading.Timer(1.5, lambda: os._exit(0)).start()
                 return self._json(200,{"ok":True,"message":"بازگشت به نسخه قبلی در حال انجام است."})
+            if path=="/api/backups/create":
+                backup = _snapshot_user_data("manual")
+                return self._json(200,{"ok":True,"message":"پشتیبان اطلاعات ساخته شد.","backup":backup.name,"backups":_backup_entries()})
+            if path=="/api/backups/restore":
+                backup_id = str(data.get("id") or "")
+                safety, restored = _restore_user_data(backup_id)
+                return self._json(200,{"ok":True,"message":"اطلاعات با موفقیت بازیابی شد.","restored":restored,"safety_backup":safety.name})
+            if path=="/api/backups/delete":
+                backup_id = str(data.get("id") or "")
+                _delete_data_backup(backup_id)
+                return self._json(200,{"ok":True,"message":"نسخه پشتیبان حذف شد.","backups":_backup_entries()})
+            if path=="/api/backups/open-folder":
+                MANUAL_BACKUP_DIR.mkdir(parents=True,exist_ok=True)
+                if os.name == "nt": os.startfile(str(MANUAL_BACKUP_DIR))
+                else: _subprocess.Popen(["xdg-open",str(MANUAL_BACKUP_DIR)])
+                return self._json(200,{"ok":True})
             if path=="/api/settings-save":
                 return self._json(200,{"ok":True,"settings":save_settings(data.get("settings") if isinstance(data,dict) else {})})
             if path=="/api/reminders/mark-read":

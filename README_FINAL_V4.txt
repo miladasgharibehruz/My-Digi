@@ -10,6 +10,8 @@ WHAT IS FIXED
 - The installer and its SHA-256 checksum are published together and verified before an update.
 - Before installation, both the installed application and user data are backed up.
 - The newest three backups are retained and application rollback remains available.
+- Settings now includes complete data-backup management: create, list, inspect, restore, delete, and open the backup folder.
+- Restoring data first creates an automatic safety snapshot of the current state.
 - Update activity and errors are written to: %APPDATA%\My Digi\update.log
 - pywebview startup errors are written to: %APPDATA%\My Digi\startup-error.log
 
