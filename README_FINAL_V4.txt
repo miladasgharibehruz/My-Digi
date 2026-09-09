@@ -19,6 +19,9 @@ WHAT IS FIXED
 - The version badge at the bottom of the main menu is generated dynamically as Vx.y.z from the installed application version.
 - Backup restore/delete and update confirmations always appear above the Settings dialog.
 - The Settings scrollbar now matches the dark cyan/blue My Digi interface.
+- A themed Health Center is available above Settings in the right menu.
+- The Health Center tests internet, Digikala, GitHub updates, JSON data integrity, backups, update state, free disk space, monitor activity, and recent errors.
+- Health reports can be copied or saved to Downloads; malformed data repair first creates an automatic safety backup and archives the damaged file.
 - pywebview startup errors are written to: %APPDATA%\My Digi\startup-error.log
 
 HOW TO PUBLISH AN UPDATE

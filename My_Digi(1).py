@@ -3661,6 +3661,171 @@ def _backup_entries():
     return result
 
 
+HEALTH_DATA_FILES = {
+    DATA_FILE: list,
+    REFERENCE_FILE: dict,
+    MARKET_TREND_FILE: list,
+    REMINDER_STATE_FILE: dict,
+    ACCOUNTING_FILE: dict,
+    ACCOUNTING_REPORTS_FILE: (dict, list),
+    ACCOUNTING_MONTH_TRACK_FILE: dict,
+    SETTINGS_FILE: dict,
+    MONTHLY_REPORTS_FILE: (dict, list),
+    MONTH_TRACK_FILE: dict,
+}
+
+
+def _health_item(key, title, status, value, detail, action=None):
+    return {"key": key, "title": title, "status": status, "value": value, "detail": detail, "action": action}
+
+
+def _health_diagnostics():
+    """Run bounded, read-only checks used by the in-app health center."""
+    checks = []
+    checked_at = datetime.now().isoformat(timespec="seconds")
+
+    # General connectivity is intentionally independent from GitHub so a blocked
+    # update service does not make the whole internet look offline.
+    try:
+        sock = socket.create_connection(("www.digikala.com", 443), timeout=4)
+        sock.close()
+        checks.append(_health_item("internet", "اتصال اینترنت", "ok", "متصل", "ارتباط عمومی شبکه برقرار است."))
+    except Exception as exc:
+        checks.append(_health_item("internet", "اتصال اینترنت", "error", "قطع یا محدود", f"اتصال شبکه برقرار نشد: {exc}", "retry"))
+
+    try:
+        req = Request("https://api.digikala.com/v2/", headers={"User-Agent": "My-Digi-Health/1.0", "Accept": "application/json"})
+        with urlopen(req, timeout=8) as response:
+            response.read(256)
+        checks.append(_health_item("digikala", "ارتباط با دیجی‌کالا", "ok", "سالم", "API دیجی‌کالا پاسخ معتبر داد."))
+    except HTTPError as exc:
+        # Any HTTP response proves the host/TLS path is reachable; 4xx on the
+        # generic root endpoint is not an outage.
+        status = "ok" if 400 <= exc.code < 500 else "warning"
+        checks.append(_health_item("digikala", "ارتباط با دیجی‌کالا", status, f"HTTP {exc.code}", "سرور دیجی‌کالا در دسترس است." if status == "ok" else "پاسخ سرویس موقتاً غیرعادی است.", "retry" if status != "ok" else None))
+    except Exception as exc:
+        checks.append(_health_item("digikala", "ارتباط با دیجی‌کالا", "error", "ناموفق", f"ارتباط با دیجی‌کالا برقرار نشد: {exc}", "retry"))
+
+    try:
+        release, release_error = _github_latest_release()
+        if release_error:
+            checks.append(_health_item("github", "ارتباط با GitHub", "warning", "نیازمند توجه", release_error, "retry"))
+        else:
+            latest = str((release or {}).get("version") or "نامشخص")
+            checks.append(_health_item("github", "ارتباط با GitHub", "ok", "سالم", f"سرویس آپدیت در دسترس است؛ آخرین انتشار: {latest}."))
+    except Exception as exc:
+        checks.append(_health_item("github", "ارتباط با GitHub", "error", "ناموفق", f"بررسی GitHub انجام نشد: {exc}", "retry"))
+
+    invalid = []
+    existing = 0
+    for path, expected in HEALTH_DATA_FILES.items():
+        if not path.exists():
+            continue
+        existing += 1
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(value, expected):
+                invalid.append(path.name)
+        except Exception:
+            invalid.append(path.name)
+    if invalid:
+        checks.append(_health_item("database", "اطلاعات برنامه", "error", f"{len(invalid)} فایل ناسالم", "فایل‌های نیازمند تعمیر: " + "، ".join(invalid), "repair"))
+    else:
+        checks.append(_health_item("database", "اطلاعات برنامه", "ok", "سالم", f"ساختار {existing} فایل اطلاعاتی بررسی و تأیید شد."))
+
+    backups = _backup_entries()
+    if backups:
+        latest = backups[0]
+        try:
+            age_days = max(0, (datetime.now() - datetime.fromisoformat(str(latest.get("created_at")))).days)
+        except Exception:
+            age_days = 0
+        status = "warning" if age_days >= 14 else "ok"
+        detail = f"آخرین بکاپ {age_days} روز قبل ساخته شده است." if age_days else "یک بکاپ جدید در دسترس است."
+        checks.append(_health_item("backup", "سیستم بکاپ", status, f"{len(backups)} بکاپ", detail, "backup" if status == "warning" else None))
+    else:
+        checks.append(_health_item("backup", "سیستم بکاپ", "warning", "بدون بکاپ", "هنوز هیچ نسخه پشتیبانی ساخته نشده است.", "backup"))
+
+    update = _update_state()
+    last_update = update.get("last_update") or {}
+    if last_update.get("status") == "failed":
+        checks.append(_health_item("update", "سیستم به‌روزرسانی", "error", f"نسخه {APP_VERSION}", "آخرین نصب ناموفق بود: " + str(last_update.get("error") or "خطای نامشخص"), "settings"))
+    elif last_update.get("status") == "success":
+        checks.append(_health_item("update", "سیستم به‌روزرسانی", "ok", f"نسخه {APP_VERSION}", "آخرین به‌روزرسانی با موفقیت نصب شده است."))
+    else:
+        checks.append(_health_item("update", "سیستم به‌روزرسانی", "ok", f"نسخه {APP_VERSION}", "سامانه به‌روزرسانی آماده بررسی است."))
+
+    try:
+        free = shutil.disk_usage(APP_DIR).free
+        free_gb = free / (1024 ** 3)
+        disk_status = "error" if free < 500 * 1024 ** 2 else "warning" if free < 2 * 1024 ** 3 else "ok"
+        disk_detail = "فضای بسیار کمی باقی مانده است." if disk_status == "error" else "برای آپدیت و بکاپ بهتر است فضا آزاد شود." if disk_status == "warning" else "فضای کافی برای اطلاعات و به‌روزرسانی وجود دارد."
+        checks.append(_health_item("disk", "فضای ذخیره‌سازی", disk_status, f"{free_gb:.1f} GB آزاد", disk_detail, "data_folder" if disk_status != "ok" else None))
+    except Exception as exc:
+        checks.append(_health_item("disk", "فضای ذخیره‌سازی", "warning", "نامشخص", f"فضای دیسک خوانده نشد: {exc}"))
+
+    products = load_products()
+    checked_values = [str(item.get("checked") or "").strip() for item in products if str(item.get("checked") or "").strip()]
+    last_checked = max(checked_values) if checked_values else "—"
+    monitor_status = "ok" if checked_values else "warning"
+    checks.append(_health_item("monitor", "آخرین بررسی محصولات", monitor_status, last_checked, f"{len(products)} کالا در مانیتور ثبت شده است." if products else "هنوز کالایی در مانیتور ثبت نشده است."))
+
+    recent_errors = []
+    for log_name in ("update.log", "installer.log", "startup-error.log"):
+        log_path = APP_DIR / log_name
+        if not log_path.exists():
+            continue
+        try:
+            lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-200:]
+            recent_errors.extend(f"{log_name}: {line.strip()}" for line in lines if "error" in line.lower() or "traceback" in line.lower())
+        except Exception:
+            pass
+    error_count = len(recent_errors)
+    checks.append(_health_item("errors", "خطاهای اخیر", "warning" if error_count else "ok", f"{error_count} خطا", recent_errors[-1] if recent_errors else "خطای ثبت‌شده‌ای در گزارش‌های اخیر پیدا نشد.", "report" if error_count else None))
+
+    counts = {"ok": 0, "warning": 0, "error": 0}
+    for item in checks:
+        counts[item["status"]] = counts.get(item["status"], 0) + 1
+    overall = "error" if counts["error"] else "warning" if counts["warning"] else "ok"
+    return {"ok": True, "checked_at": checked_at, "overall": overall, "counts": counts, "checks": checks, "recent_errors": recent_errors[-10:], "version": APP_VERSION}
+
+
+def _health_report_text(report):
+    labels = {"ok": "سالم", "warning": "نیازمند توجه", "error": "دارای مشکل"}
+    lines = ["گزارش سلامت My Digi", f"نسخه: V{APP_VERSION}", f"زمان بررسی: {report.get('checked_at', '—')}", ""]
+    for item in report.get("checks", []):
+        lines.append(f"[{labels.get(item.get('status'), item.get('status'))}] {item.get('title')}: {item.get('value')}")
+        lines.append(f"  {item.get('detail')}")
+    errors = report.get("recent_errors") or []
+    if errors:
+        lines.extend(["", "آخرین خطاها:", *[f"- {x}" for x in errors]])
+    return "\n".join(lines)
+
+
+def _repair_health_data():
+    """Archive malformed JSON files and recreate only their safe empty shape."""
+    safety = _snapshot_user_data("repair-safety")
+    repaired = []
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    for path, expected in HEALTH_DATA_FILES.items():
+        if not path.exists():
+            continue
+        valid = True
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            valid = isinstance(value, expected)
+        except Exception:
+            valid = False
+        if valid:
+            continue
+        archive = path.with_name(f"{path.name}.corrupt-{stamp}")
+        shutil.copy2(path, archive)
+        default = [] if expected is list else {}
+        path.write_text(json.dumps(default, ensure_ascii=False, indent=2), encoding="utf-8")
+        repaired.append(path.name)
+    return safety, repaired
+
+
 def _resolve_data_backup(backup_id):
     kind, separator, name = str(backup_id or "").partition(":")
     if separator != ":" or kind not in {"manual", "update"} or not re.fullmatch(r"[A-Za-z0-9._-]+", name):
@@ -3806,6 +3971,9 @@ class _MyDigiHandler(BaseHTTPRequestHandler):
         if path=="/api/settings": self._json(200,{"ok":True,"settings":load_settings()}); return
         if path=="/api/update-state": self._json(200,{"ok":True,**_update_state()}); return
         if path=="/api/backups": self._json(200,{"ok":True,"backups":_backup_entries()}); return
+        if path=="/api/health":
+            try: return self._json(200,_health_diagnostics())
+            except Exception as exc: return self._json(500,{"ok":False,"error":f"اجرای بررسی سلامت ناموفق بود: {exc}"})
         if path=="/api/check-update":
             try:
                 rel, err = _github_latest_release()
@@ -3922,6 +4090,18 @@ class _MyDigiHandler(BaseHTTPRequestHandler):
             if path=="/api/reference":
                 result=_reference_api_action(data)
                 return self._json(200,result)
+            if path=="/api/health/report":
+                report=_health_diagnostics()
+                out=_web_downloads_dir()/f"My_Digi_Health_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                out.write_text(_health_report_text(report),encoding="utf-8-sig")
+                return self._json(200,{"ok":True,"name":out.name,"folder":str(out.parent)})
+            if path=="/api/health/repair":
+                safety,repaired=_repair_health_data()
+                return self._json(200,{"ok":True,"repaired":repaired,"safety_backup":safety.name,"health":_health_diagnostics()})
+            if path=="/api/health/open-data":
+                if os.name=="nt": os.startfile(str(APP_DIR))
+                else: _subprocess.Popen(["xdg-open",str(APP_DIR)])
+                return self._json(200,{"ok":True})
             if path=="/api/start-update":
                 rel = data.get("release") or {}
                 inst = (rel.get("installer") or {}).get("url")
