@@ -1,7 +1,12 @@
-name: Build My Digi Release
+name: Build and Publish My Digi
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number, for example 2.0.1'
+        required: true
+        type: string
   push:
     tags:
       - 'v*'
@@ -16,236 +21,116 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Resolve and apply version
+        id: version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $version = $env:GITHUB_REF_NAME -replace '^[vV]', ''
+          }
+          else {
+            $version = '${{ inputs.version }}'.Trim() -replace '^[vV]', ''
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Version must use x.y.z format, for example 2.0.1. Received: $version"
+          }
+
+          $sourcePath = 'My_Digi(1).py'
+          $source = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
+          $source = [regex]::Replace($source, 'APP_VERSION\s*=\s*"[^"]+"', "APP_VERSION = `"$version`"", 1)
+          Set-Content -LiteralPath $sourcePath -Value $source -Encoding UTF8
+
+          $issPath = 'MyDigi.iss'
+          $iss = Get-Content -LiteralPath $issPath -Raw -Encoding UTF8
+          $iss = [regex]::Replace($iss, '#define MyDigiVersion\s+"[^"]+"', "#define MyDigiVersion `"$version`"", 1)
+          Set-Content -LiteralPath $issPath -Value $iss -Encoding UTF8
+
+          "value=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "Building My Digi $version"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: '3.12'
 
-      - name: Install Python packages
+      - name: Install build dependencies
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pyinstaller
 
-      - name: Write release update config
+      - name: Write update configuration
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          @{ repo = $env:GITHUB_REPOSITORY } |
+            ConvertTo-Json |
+            Set-Content -Encoding UTF8 update_config.json
 
-          @{
-            repo = $env:GITHUB_REPOSITORY
-          } | ConvertTo-Json | Set-Content -Encoding UTF8 update_config.json
-
-      - name: Build My Digi EXE
+      - name: Build application and updater
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-
           python -m PyInstaller --noconfirm --clean MyDigi.spec
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "My Digi EXE build failed with exit code $LASTEXITCODE"
-          }
-
-      - name: Build updater EXE
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
+          if ($LASTEXITCODE -ne 0) { throw 'My Digi build failed.' }
           python -m PyInstaller --noconfirm --clean MyDigiUpdater.spec
+          if ($LASTEXITCODE -ne 0) { throw 'Updater build failed.' }
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "Updater EXE build failed with exit code $LASTEXITCODE"
-          }
-
-      - name: Prepare updater for installer
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          Write-Host "========================================"
-          Write-Host "Checking PyInstaller output..."
-          Write-Host "========================================"
-
-          if (Test-Path -LiteralPath "dist") {
-            Get-ChildItem -Path "dist" -Recurse -Force |
-              Select-Object FullName, Length
-          }
-          else {
-            throw "dist directory does not exist."
-          }
-
-          $updater = "dist\My Digi Updater.exe"
-
-          if (-not (Test-Path -LiteralPath $updater)) {
-            throw "PyInstaller did not create: $updater"
-          }
-
-          $updaterDir = "dist\My Digi Updater"
-
-          New-Item -ItemType Directory -Path $updaterDir -Force | Out-Null
-
-          Move-Item `
-            -LiteralPath $updater `
-            -Destination "$updaterDir\My Digi Updater.exe" `
-            -Force
-
-          if (-not (Test-Path -LiteralPath "$updaterDir\My Digi Updater.exe")) {
-            throw "Failed to prepare updater for installer."
-          }
-
-          Write-Host "========================================"
-          Write-Host "Updater prepared successfully:"
-          Write-Host "$updaterDir\My Digi Updater.exe"
-          Write-Host "========================================"
+          $updater = 'dist\My Digi Updater.exe'
+          if (-not (Test-Path -LiteralPath $updater)) { throw "Missing updater output: $updater" }
+          New-Item -ItemType Directory -Path 'dist\My Digi Updater' -Force | Out-Null
+          Move-Item -LiteralPath $updater -Destination 'dist\My Digi Updater\My Digi Updater.exe' -Force
 
       - name: Install Inno Setup
         shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          choco install innosetup --no-progress -y
+        run: choco install innosetup --no-progress -y
 
       - name: Build installer
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-
-          Write-Host "========================================"
-          Write-Host "Current directory:"
-          Write-Host (Get-Location)
-          Write-Host "========================================"
-
-          Write-Host "ISCC path:"
-          Write-Host $iscc
-
-          Write-Host "ISCC exists:"
-          Write-Host (Test-Path -LiteralPath $iscc)
-
-          Write-Host "MyDigi.iss exists:"
-          Write-Host (Test-Path -LiteralPath "MyDigi.iss")
-
-          Write-Host "========================================"
-          Write-Host "Checking required installer files..."
-          Write-Host "========================================"
-
-          Write-Host "dist\My Digi.exe:"
-          Write-Host (Test-Path -LiteralPath "dist\My Digi.exe")
-
-          Write-Host "dist\My Digi Updater\My Digi Updater.exe:"
-          Write-Host (Test-Path -LiteralPath "dist\My Digi Updater\My Digi Updater.exe")
-
-          Write-Host "update_config.json:"
-          Write-Host (Test-Path -LiteralPath "update_config.json")
-
-          Write-Host "========================================"
-          Write-Host "dist contents:"
-          Write-Host "========================================"
-
-          if (Test-Path -LiteralPath "dist") {
-            Get-ChildItem -Path "dist" -Recurse -Force |
-              Select-Object FullName, Length
+          foreach ($required in @(
+            'dist\My Digi.exe',
+            'dist\My Digi Updater\My Digi Updater.exe',
+            'My Digi.ico',
+            'update_config.json'
+          )) {
+            if (-not (Test-Path -LiteralPath $required)) { throw "Required file missing: $required" }
           }
-          else {
-            Write-Host "WARNING: dist directory does not exist."
-          }
-
-          Write-Host "========================================"
-          Write-Host "Running Inno Setup..."
-          Write-Host "========================================"
-
-          if (-not (Test-Path -LiteralPath $iscc)) {
-            throw "Inno Setup compiler not found: $iscc"
-          }
-
-          if (-not (Test-Path -LiteralPath "MyDigi.iss")) {
-            throw "MyDigi.iss not found in $PWD"
-          }
-
-          if (-not (Test-Path -LiteralPath "dist\My Digi.exe")) {
-            throw "Required file not found: dist\My Digi.exe"
-          }
-
-          if (-not (Test-Path -LiteralPath "dist\My Digi Updater\My Digi Updater.exe")) {
-            throw "Required file not found: dist\My Digi Updater\My Digi Updater.exe"
-          }
-
-          if (-not (Test-Path -LiteralPath "update_config.json")) {
-            throw "Required file not found: update_config.json"
-          }
-
           & $iscc "$PWD\MyDigi.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path -LiteralPath 'installer\My-Digi-Setup.exe')) { throw 'Installer was not created.' }
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "Inno Setup failed with exit code $LASTEXITCODE"
-          }
-
-      - name: Verify installer
+      - name: Create SHA-256 checksum
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $hash = (Get-FileHash 'installer\My-Digi-Setup.exe' -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Encoding ascii 'installer\My-Digi-Setup.exe.sha256' "$hash  My-Digi-Setup.exe"
 
-          Write-Host "Checking installer output..."
-
-          if (-not (Test-Path -LiteralPath "installer\My Digi.exe")) {
-            Write-Host "Installer directory contents:"
-
-            if (Test-Path -LiteralPath "installer") {
-              Get-ChildItem -Path "installer" -Recurse -Force |
-                Select-Object FullName, Length
-            }
-            else {
-              Write-Host "installer directory does not exist."
-            }
-
-            throw "Installer was not created: installer\My Digi.exe"
-          }
-
-          Write-Host "Installer successfully created:"
-          Get-Item "installer\My Digi.exe" |
-            Select-Object FullName, Length
-
-      - name: Create SHA-256 file
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          $hash = (
-            Get-FileHash "installer\My Digi.exe" -Algorithm SHA256
-          ).Hash.ToLower()
-
-          Set-Content `
-            -Encoding ascii `
-            "installer\My Digi.exe.sha256" `
-            "$hash  My Digi.exe"
-
-          Write-Host "SHA-256:"
-          Write-Host $hash
-
-      - name: Upload installer artifact
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: My-Digi-Installer
+          name: My-Digi-${{ steps.version.outputs.value }}
           path: |
-            installer/My Digi.exe
-            installer/My Digi.exe.sha256
+            installer/My-Digi-Setup.exe
+            installer/My-Digi-Setup.exe.sha256
           if-no-files-found: error
 
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: false
+          tag_name: v${{ steps.version.outputs.value }}
+          name: My Digi v${{ steps.version.outputs.value }}
+          make_latest: true
+          generate_release_notes: true
           body: |
-            ## تغییرات My Digi ${{ github.ref_name }}
+            نسخه جدید My Digi آماده نصب است.
 
-            - نسخه جدید My Digi منتشر شد.
-            - اطلاعات کاربر در هنگام آپدیت حفظ می‌شوند.
-            - قبل از آپدیت، نسخه قبلی پشتیبان‌گیری می‌شود و امکان بازگشت وجود دارد.
+            پیش از نصب خودکار، از نسخه برنامه و اطلاعات کاربر پشتیبان گرفته می‌شود.
           files: |
-            installer/My Digi.exe
-            installer/My Digi.exe.sha256
+            installer/My-Digi-Setup.exe
+            installer/My-Digi-Setup.exe.sha256
