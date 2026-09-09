@@ -11,7 +11,7 @@ AppPublisher=My Digi
 DefaultDirName={autopf}\My Digi
 DefaultGroupName=My Digi
 OutputDir=installer
-OutputBaseFilename=My Digi
+OutputBaseFilename=My-Digi-Setup
 SetupIconFile=My Digi.ico
 UninstallDisplayIcon={app}\My Digi.exe
 Compression=lzma2
@@ -21,14 +21,15 @@ ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
 DisableProgramGroupPage=yes
 [Tasks]
-Name: "desktopicon"; Description: "ایجاد میانبر My Digi روی دسکتاپ"; GroupDescription: "میانبرها:"; Flags: unchecked
+Name: "desktopicon"; Description: "ایجاد میانبر My Digi روی دسکتاپ"; GroupDescription: "میانبرها:"
 [Files]
 Source: "dist\My Digi.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\My Digi Updater\My Digi Updater.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "update_config.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "My Digi.ico"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
-Name: "{group}\My Digi"; Filename: "{app}\My Digi.exe"
-Name: "{autodesktop}\My Digi"; Filename: "{app}\My Digi.exe"; Tasks: desktopicon
+Name: "{group}\My Digi"; Filename: "{app}\My Digi.exe"; IconFilename: "{app}\My Digi.ico"; AppUserModelID: "Mabouth.MyDigi"
+Name: "{autodesktop}\My Digi"; Filename: "{app}\My Digi.exe"; IconFilename: "{app}\My Digi.ico"; AppUserModelID: "Mabouth.MyDigi"; Tasks: desktopicon
 [Run]
 Filename: "{app}\My Digi.exe"; Description: "اجرای My Digi"; Flags: nowait postinstall skipifsilent
 [UninstallDelete]

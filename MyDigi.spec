@@ -1,9 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('mydigi_graphic.html', '.')]
+datas = [('mydigi_graphic.html', '.'), ('My Digi.ico', '.')]
 binaries = []
-hiddenimports = []
+hiddenimports = [
+    'webview.platforms.edgechromium',
+    'webview.platforms.winforms',
+    'clr',
+    'pythonnet',
+]
 
 for pkg in ['webview']:
     try:

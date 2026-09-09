@@ -3443,38 +3443,62 @@ def _github_latest_release():
     repo = _github_repo()
     if not repo or "/" not in repo:
         return None, "انتشار آنلاین GitHub هنوز برای این نسخه تنظیم نشده است."
-    headers={"User-Agent":"My-Digi-Updater/2.0"}
+    headers={
+        "User-Agent":"My-Digi-Updater/2.1",
+        "Accept":"application/vnd.github+json",
+        "X-GitHub-Api-Version":"2022-11-28",
+    }
+    api_url = f"{UPDATE_API_BASE}/repos/{repo}/releases/latest"
+    req = Request(api_url, headers=headers)
+    with urlopen(req, timeout=20) as r:
+        release = json.loads(r.read().decode("utf-8-sig"))
 
-    # Use GitHub's normal releases page instead of the REST API. This avoids
-    # API 404/rate-limit problems on machines where the GitHub API is filtered
-    # or unavailable, while still using GitHub's own stable-release redirect.
-    latest_url = f"https://github.com/{repo}/releases/latest"
-    req = Request(latest_url, headers=headers)
-    with urlopen(req, timeout=15) as r:
-        final_url = r.geturl()
-        html = r.read().decode("utf-8", "replace")
-    m = re.search(r"/releases/tag/([^\"?#/]+)", final_url)
-    if not m:
-        m = re.search(r"/releases/tag/([^\"?#/]+)", html)
-    if not m:
-        return None, "هنوز نسخه منتشرشده‌ای در GitHub پیدا نشد."
-    from urllib.parse import unquote
-    tag_raw = unquote(m.group(1))
-    tag = tag_raw.lstrip("vV")
+    tag_raw = str(release.get("tag_name") or "").strip()
+    if not tag_raw:
+        return None, "آخرین Release گیت‌هاب شماره نسخه ندارد."
 
-    # Find the downloadable EXE link on the release page.
-    installer_url = None
-    for mm in re.finditer(r'href=[\"\']([^\"\']*?/releases/download/[^\"\']*?My(?:%20|\s)+Digi(?:%20|\s)+exe[^\"\']*)', html, re.I):
-        installer_url = mm.group(1).replace("&amp;", "&")
-        break
-    if installer_url and installer_url.startswith("/"):
-        installer_url = "https://github.com" + installer_url
-    if not installer_url:
-        installer_url = f"https://github.com/{repo}/releases/download/{tag_raw}/My%20Digi.exe"
+    assets = release.get("assets") or []
+    installer_asset = next(
+        (a for a in assets if str(a.get("name") or "").lower() == "my-digi-setup.exe"),
+        None,
+    )
+    if not installer_asset:
+        installer_asset = next(
+            (a for a in assets if str(a.get("name") or "").lower().endswith(".exe")),
+            None,
+        )
+    if not installer_asset:
+        return None, "فایل نصب EXE در آخرین Release پیدا نشد."
 
-    installer = {"name":"My Digi.exe", "url":installer_url, "size":None, "sha256":""}
-    release_page = f"https://github.com/{repo}/releases/tag/{tag_raw}"
-    return {"version": tag, "body":"", "html_url":release_page, "installer":installer, "published_at":None}, None
+    checksum = ""
+    checksum_asset = next(
+        (a for a in assets if str(a.get("name") or "").lower() == "my-digi-setup.exe.sha256"),
+        None,
+    )
+    if checksum_asset and checksum_asset.get("browser_download_url"):
+        try:
+            checksum_req = Request(checksum_asset["browser_download_url"], headers={"User-Agent":"My-Digi-Updater/2.1"})
+            with urlopen(checksum_req, timeout=15) as r:
+                checksum_text = r.read(4096).decode("ascii", "ignore")
+            match = re.search(r"\b[0-9a-fA-F]{64}\b", checksum_text)
+            if match:
+                checksum = match.group(0).lower()
+        except Exception:
+            pass
+
+    installer = {
+        "name": str(installer_asset.get("name") or "My-Digi-Setup.exe"),
+        "url": installer_asset.get("browser_download_url"),
+        "size": installer_asset.get("size"),
+        "sha256": checksum,
+    }
+    return {
+        "version": tag_raw.lstrip("vV"),
+        "body": str(release.get("body") or ""),
+        "html_url": release.get("html_url"),
+        "installer": installer,
+        "published_at": release.get("published_at"),
+    }, None
 
 
 def _version_tuple(v):
@@ -3617,7 +3641,8 @@ class _MyDigiHandler(BaseHTTPRequestHandler):
                 available = bool(rel and _version_tuple(rel.get("version")) > _version_tuple(APP_VERSION) and rel.get("installer"))
                 return self._json(200,{"ok":True,"configured":True,"available":available,"current":APP_VERSION,"release":rel,**_update_state()})
             except HTTPError as exc:
-                return self._json(502,{"ok":False,"error":f"بررسی نسخه جدید انجام نشد: HTTP {exc.code}"})
+                detail = "مخزن یا Release پیدا نشد." if exc.code == 404 else "دسترسی گیت‌هاب محدود شده یا تعداد درخواست‌ها بیش از حد است." if exc.code == 403 else f"HTTP {exc.code}"
+                return self._json(502,{"ok":False,"error":f"بررسی نسخه جدید انجام نشد: {detail}"})
             except Exception as exc:
                 return self._json(502,{"ok":False,"error":f"بررسی نسخه جدید انجام نشد: {exc}"})
         if path=="/api/reference": self._json(200,_reference_state()); return
@@ -3732,6 +3757,7 @@ class _MyDigiHandler(BaseHTTPRequestHandler):
                 if not inst or not ver: return self._json(400,{"ok":False,"error":"اطلاعات نسخه جدید ناقص است."})
                 sha = str((rel.get("installer") or {}).get("sha256") or "")
                 _launch_updater("update", ["--url", inst, "--version", ver, "--sha256", sha])
+                threading.Timer(1.5, lambda: os._exit(0)).start()
                 return self._json(200,{"ok":True,"message":"به‌روزرسانی در حال آماده‌سازی است."})
             if path=="/api/rollback":
                 version = str(data.get("version") or "").strip()
@@ -3739,6 +3765,7 @@ class _MyDigiHandler(BaseHTTPRequestHandler):
                 backup = APP_DIR / "versions" / version
                 if not backup.exists(): return self._json(404,{"ok":False,"error":"نسخه پشتیبان پیدا نشد."})
                 _launch_updater("rollback", ["--backup", str(backup)])
+                threading.Timer(1.5, lambda: os._exit(0)).start()
                 return self._json(200,{"ok":True,"message":"بازگشت به نسخه قبلی در حال انجام است."})
             if path=="/api/settings-save":
                 return self._json(200,{"ok":True,"settings":save_settings(data.get("settings") if isinstance(data,dict) else {})})
@@ -3953,6 +3980,49 @@ class _MyDigiHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args): return
 
 
+def _apply_windows_window_icon():
+    """Apply the installed ICO to My Digi's native top-level window."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes as ct
+        from ctypes import wintypes as wt
+        user32 = ct.windll.user32
+        icon_path = _install_dir() / "My Digi.ico"
+        if not icon_path.exists() and getattr(sys, "_MEIPASS", None):
+            icon_path = Path(sys._MEIPASS) / "My Digi.ico"
+        if not icon_path.exists():
+            return
+        load_image = user32.LoadImageW
+        load_image.restype = wt.HANDLE
+        big = load_image(None, str(icon_path), 1, 32, 32, 0x10)
+        small = load_image(None, str(icon_path), 1, 16, 16, 0x10)
+        current_pid = os.getpid()
+
+        @ct.WINFUNCTYPE(ct.c_bool, wt.HWND, wt.LPARAM)
+        def callback(hwnd, _):
+            pid = wt.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ct.byref(pid))
+            if pid.value == current_pid and user32.IsWindowVisible(hwnd):
+                if big:
+                    user32.SendMessageW(hwnd, 0x0080, 1, big)
+                if small:
+                    user32.SendMessageW(hwnd, 0x0080, 0, small)
+            return True
+
+        for _ in range(20):
+            user32.EnumWindows(callback, 0)
+            time.sleep(0.15)
+    except Exception as icon_exc:
+        try:
+            (APP_DIR / "startup-error.log").write_text(
+                f"{datetime.now().isoformat()} | taskbar icon: {icon_exc}\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+
 def launch_graphic_web():
     html_path=Path(__file__).with_name("mydigi_graphic.html")
     if not html_path.exists():
@@ -3968,6 +4038,7 @@ def launch_graphic_web():
     # app window.  This keeps the same HTML/CSS/JS UI but makes the top-level
     # window belong to My Digi itself, so Windows can use the EXE icon in the
     # taskbar instead of the browser's globe icon.
+    webview_error = "unknown error"
     try:
         import webview
         # On Windows the application icon is taken from the bundled executable.
@@ -3982,80 +4053,32 @@ def launch_graphic_web():
             background_color="#050b17",
             text_select=True,
         )
-        webview.start(gui="edgechromium")
+        webview.start(_apply_windows_window_icon, gui="edgechromium")
         return
     except Exception as exc:
-        print(f"pywebview main window failed; falling back to browser app window: {exc}")
+        webview_error = str(exc)
+        print(f"pywebview main window failed: {exc}")
 
-    # Fallback for systems where WebView2/pywebview is unavailable.
-    candidates=[
-        Path(os.environ.get("PROGRAMFILES",""))/"Microsoft/Edge/Application/msedge.exe",
-        Path(os.environ.get("PROGRAMFILES(X86)",""))/"Microsoft/Edge/Application/msedge.exe",
-        Path(os.environ.get("LOCALAPPDATA",""))/"Google/Chrome/Application/chrome.exe",
-    ]
-    launched=False
-    if os.name=="nt":
-        for exe in candidates:
-            try:
-                if exe.exists():
-                    proc = _subprocess.Popen([str(exe), f"--app={url}", f"--app-name=My Digi"], cwd=str(_install_dir()), creationflags=getattr(_subprocess,"CREATE_NO_WINDOW",0))
-                    launched=True
-                    # pywebview cannot initialize in this frozen build because
-                    # pythonnet initializes twice. Keep the stable Edge app
-                    # window, but replace its window/taskbar icon with the
-                    # actual My Digi ICO using the Win32 window icon message.
-                    try:
-                        import ctypes as _ct
-                        from ctypes import wintypes as _wt
-                        _user32 = _ct.windll.user32
-                        _kernel32 = _ct.windll.kernel32
-                        _IMAGE_ICON = 1
-                        _LR_LOADFROMFILE = 0x00000010
-                        _LR_DEFAULTSIZE = 0x00000040
-                        _WM_SETICON = 0x0080
-                        _ICON_SMALL = 0
-                        _ICON_BIG = 1
-                        icon_file = _install_dir() / "My Digi.ico"
-                        h_big = _user32.LoadImageW(None, str(icon_file), _IMAGE_ICON, 32, 32, _LR_LOADFROMFILE | _LR_DEFAULTSIZE) if icon_file.exists() else 0
-                        h_small = _user32.LoadImageW(None, str(icon_file), _IMAGE_ICON, 16, 16, _LR_LOADFROMFILE | _LR_DEFAULTSIZE) if icon_file.exists() else 0
-                        deadline = time.time() + 8.0
-                        while time.time() < deadline and (not h_big or not h_small):
-                            time.sleep(0.1)
-                        if h_big or h_small:
-                            @_ct.WINFUNCTYPE(_ct.c_bool, _wt.HWND, _wt.LPARAM)
-                            def _enum_icon(hwnd, lparam):
-                                try:
-                                    if not _user32.IsWindowVisible(hwnd):
-                                        return True
-                                    n = _user32.GetWindowTextLengthW(hwnd)
-                                    if not n:
-                                        return True
-                                    buf = _ct.create_unicode_buffer(n + 1)
-                                    _user32.GetWindowTextW(hwnd, buf, n + 1)
-                                    title = buf.value.strip()
-                                    if title.startswith("My Digi"):
-                                        if h_big:
-                                            _user32.SendMessageW(hwnd, _WM_SETICON, _ICON_BIG, h_big)
-                                        if h_small:
-                                            _user32.SendMessageW(hwnd, _WM_SETICON, _ICON_SMALL, h_small)
-                                        _user32.InvalidateRect(hwnd, None, True)
-                                except Exception:
-                                    pass
-                                return True
-                            for _ in range(80):
-                                _user32.EnumWindows(_enum_icon, 0)
-                                time.sleep(0.1)
-                    except Exception as icon_exc:
-                        print(f"Taskbar icon adjustment failed: {icon_exc}")
-                    break
-            except Exception: pass
-    if not launched:
-        try: _webbrowser.open(url)
-        except Exception: pass
+    # Never launch the main UI as an Edge/Chrome app. A browser-owned window
+    # is grouped under Edge in the Windows taskbar and cannot reliably inherit
+    # My Digi's application identity or pinned shortcut.
+    httpd.shutdown()
+    error_log = APP_DIR / "startup-error.log"
     try:
-        while True: time.sleep(1)
-    except KeyboardInterrupt:
-        httpd.shutdown()
+        error_log.write_text(
+            f"{datetime.now().isoformat()} | pywebview: {webview_error}\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+    try:
+        messagebox.showerror(
+            "My Digi",
+            "پنجره برنامه اجرا نشد. لطفاً Microsoft Edge WebView2 Runtime را نصب یا تعمیر کنید.\n\n"
+            f"جزئیات خطا در این فایل ذخیره شد:\n{error_log}",
+        )
+    except Exception:
+        pass
 
 # The graphical edition is the default launcher. Use --classic for the legacy Tk window.
 if __name__ == "__main__":
