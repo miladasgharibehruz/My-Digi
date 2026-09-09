@@ -13,23 +13,35 @@ def log(data_dir, message):
     except Exception:
         pass
 
+def write_status(data_dir, status, **details):
+    try:
+        path=Path(data_dir)/'update-state.json'
+        temp=path.with_suffix('.tmp')
+        payload={'status':status,'updated_at':time.strftime('%Y-%m-%dT%H:%M:%S'),**details}
+        temp.write_text(json.dumps(payload,ensure_ascii=False,indent=2),encoding='utf-8')
+        os.replace(temp,path)
+    except Exception:
+        pass
+
 def wait_pid(pid, timeout=60):
-    if not pid: return
-    if os.name != 'nt': return
+    if not pid: return True
+    if os.name != 'nt': return True
     try:
         import ctypes
         SYNCHRONIZE = 0x00100000
         h = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, int(pid))
-        if not h: return
-        ctypes.windll.kernel32.WaitForSingleObject(h, int(timeout*1000))
+        if not h: return True
+        result=ctypes.windll.kernel32.WaitForSingleObject(h, int(timeout*1000))
         ctypes.windll.kernel32.CloseHandle(h)
+        return result == 0
     except Exception:
         for _ in range(int(timeout*10)):
             try:
                 os.kill(int(pid), 0)
                 time.sleep(.1)
             except Exception:
-                break
+                return True
+        return False
 
 def elevate_if_needed(argv):
     if os.name != 'nt': return False
@@ -66,7 +78,7 @@ def safe_backup(install_dir, data_dir, version):
     copy_tree(install_dir,dst/'app')
     data_snapshot=dst/'data'
     data_snapshot.mkdir(parents=True,exist_ok=True)
-    excluded={'versions','Updater','update.log','startup-error.log'}
+    excluded={'versions','backups','Updater','update.log','installer.log','startup-error.log','update-state.json'}
     for item in Path(data_dir).iterdir():
         if item.name in excluded:
             continue
@@ -101,9 +113,21 @@ def download(url, out):
             if not b: break
             f.write(b)
 
-def run_installer(installer):
-    # Inno Setup accepts these flags for a quiet upgrade.
-    return subprocess.run([str(installer), '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS'], check=False).returncode
+def run_installer(installer, data_dir):
+    install_log=Path(data_dir)/'installer.log'
+    common=['/NORESTART','/NOCLOSEAPPLICATIONS','/SP-',f'/LOG={install_log}']
+    quiet=[str(installer),'/VERYSILENT','/SUPPRESSMSGBOXES',*common]
+    rc=subprocess.run(quiet,check=False).returncode
+    log(data_dir,f"Silent installer exit code: {rc}")
+    if rc == 0:
+        return 0
+    # A silent Inno Setup exit code 5 commonly means the installation was
+    # aborted. Retry visibly so Windows can show the actual blocking prompt.
+    log(data_dir,"Silent installation failed; starting visible installer retry")
+    visible=[str(installer),*common]
+    rc=subprocess.run(visible,check=False).returncode
+    log(data_dir,f"Visible installer exit code: {rc}")
+    return rc
 
 def rollback(backup, install_dir):
     backup=Path(backup); install_dir=Path(install_dir)
@@ -129,7 +153,9 @@ def main():
     if elevate_if_needed(sys.argv[1:]): return 0
     try:
         log(a.data_dir, f"Updater started: update={a.update}, rollback={a.rollback}, current={a.current_version}, target={a.version}")
-        wait_pid(int(a.pid or 0))
+        write_status(a.data_dir,'started',current=a.current_version,target=a.version)
+        if not wait_pid(int(a.pid or 0),timeout=30):
+            raise RuntimeError('نسخه قبلی My Digi به‌طور کامل بسته نشد؛ به‌روزرسانی متوقف شد.')
         install_dir=Path(a.install_dir).resolve(); data_dir=Path(a.data_dir).resolve()
         if a.rollback:
             log(data_dir, f"Restoring application backup: {a.backup}")
@@ -138,6 +164,7 @@ def main():
             version=str(a.version or '').strip() or 'unknown'
             backup_path=safe_backup(install_dir,data_dir,version=str(a.current_version or 'previous'))
             log(data_dir, f"Application and user-data backup created: {backup_path}")
+            write_status(data_dir,'downloading',current=a.current_version,target=version,backup=backup_path.name)
             with tempfile.TemporaryDirectory(prefix='mydigi-update-') as td:
                 installer=Path(td)/'My-Digi-Setup.exe'
                 log(data_dir, f"Downloading release {version} from GitHub")
@@ -147,14 +174,17 @@ def main():
                     expected=str(a.sha256).strip().lower().replace('sha256:','')
                     if got != expected: raise RuntimeError('صحت فایل به‌روزرسانی تأیید نشد؛ نصب متوقف شد.')
                     log(data_dir, "SHA-256 verification succeeded")
-                rc=run_installer(installer)
+                write_status(data_dir,'installing',current=a.current_version,target=version,backup=backup_path.name)
+                rc=run_installer(installer,data_dir)
                 if rc != 0: raise RuntimeError(f'نصب نسخه جدید با کد {rc} تمام شد.')
                 log(data_dir, f"Release {version} installed successfully")
+                write_status(data_dir,'success',current=a.current_version,target=version,backup=backup_path.name)
         exe=install_dir/'My Digi.exe'
         if exe.exists(): subprocess.Popen([str(exe)],cwd=str(install_dir),creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         return 0
     except Exception as exc:
         log(a.data_dir, f"ERROR: {type(exc).__name__}: {exc}")
+        write_status(a.data_dir,'failed',current=a.current_version,target=a.version,error=str(exc))
         try:
             import tkinter as tk
             from tkinter import messagebox

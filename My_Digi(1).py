@@ -3576,11 +3576,16 @@ def _update_state():
         for p in versions.iterdir():
             if p.is_dir(): backups.append(p.name)
     backups.sort(reverse=True)
-    return {"current": APP_VERSION, "backups": backups[:3], "can_rollback": bool(backups)}
+    last_update={}
+    try:
+        last_update=json.loads((APP_DIR/"update-state.json").read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {"current": APP_VERSION, "backups": backups[:3], "can_rollback": bool(backups), "last_update":last_update}
 
 
 MANUAL_BACKUP_DIR = APP_DIR / "backups"
-BACKUP_EXCLUDES = {"versions", "backups", "Updater", "update.log", "startup-error.log"}
+BACKUP_EXCLUDES = {"versions", "backups", "Updater", "update.log", "installer.log", "startup-error.log", "update-state.json"}
 
 
 def _safe_backup_name(prefix="manual"):

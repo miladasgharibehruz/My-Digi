@@ -19,6 +19,7 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
+RestartApplications=no
 DisableProgramGroupPage=yes
 [Tasks]
 Name: "desktopicon"; Description: "ایجاد میانبر My Digi روی دسکتاپ"; GroupDescription: "میانبرها:"
