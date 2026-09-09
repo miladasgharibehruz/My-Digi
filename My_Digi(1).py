@@ -1,7 +1,7 @@
 import json, re, threading, webbrowser, sys, socket, uuid, zipfile, xml.sax.saxutils as sx, os, time, shutil
 from datetime import datetime, date
 from pathlib import Path
-from urllib.request import Request, urlopen
+from urllib.request import Request, urlopen, build_opener, ProxyHandler
 from urllib.error import HTTPError, URLError
 from io import BytesIO
 import tkinter as tk
@@ -3439,6 +3439,19 @@ def _github_repo():
     return repo
 
 
+def _urlopen_resilient(request, timeout=20):
+    """Try Windows/system networking first, then bypass a broken proxy."""
+    first_error = None
+    try:
+        return urlopen(request, timeout=timeout)
+    except Exception as exc:
+        first_error = exc
+    try:
+        return build_opener(ProxyHandler({})).open(request, timeout=timeout)
+    except Exception as direct_error:
+        raise RuntimeError(f"اتصال معمول: {first_error} | اتصال مستقیم: {direct_error}") from direct_error
+
+
 def _github_latest_release():
     repo = _github_repo()
     if not repo or "/" not in repo:
@@ -3450,8 +3463,46 @@ def _github_latest_release():
     }
     api_url = f"{UPDATE_API_BASE}/repos/{repo}/releases/latest"
     req = Request(api_url, headers=headers)
-    with urlopen(req, timeout=20) as r:
-        release = json.loads(r.read().decode("utf-8-sig"))
+    try:
+        with _urlopen_resilient(req, timeout=20) as r:
+            release = json.loads(r.read().decode("utf-8-sig"))
+    except Exception as api_error:
+        # Some networks block api.github.com while github.com itself works.
+        latest_req = Request(
+            f"https://github.com/{repo}/releases/latest",
+            headers={"User-Agent":"My-Digi-Updater/2.1"},
+        )
+        try:
+            with _urlopen_resilient(latest_req, timeout=20) as r:
+                final_url = r.geturl()
+                html = r.read().decode("utf-8", "replace")
+        except Exception as page_error:
+            raise RuntimeError(f"GitHub API: {api_error} | GitHub Releases: {page_error}") from page_error
+        match = re.search(r"/releases/tag/([^\"?#/]+)", final_url)
+        if not match:
+            match = re.search(r"/releases/tag/([^\"?#/]+)", html)
+        if not match:
+            return None, "هنوز Release منتشرشده‌ای در GitHub پیدا نشد."
+        tag_raw = unquote(match.group(1))
+        base = f"https://github.com/{repo}/releases/download/{tag_raw}"
+        installer_url = f"{base}/My-Digi-Setup.exe"
+        checksum = ""
+        try:
+            checksum_req = Request(f"{base}/My-Digi-Setup.exe.sha256", headers={"User-Agent":"My-Digi-Updater/2.1"})
+            with _urlopen_resilient(checksum_req, timeout=15) as r:
+                checksum_text = r.read(4096).decode("ascii", "ignore")
+            checksum_match = re.search(r"\b[0-9a-fA-F]{64}\b", checksum_text)
+            if checksum_match:
+                checksum = checksum_match.group(0).lower()
+        except Exception:
+            pass
+        return {
+            "version": tag_raw.lstrip("vV"),
+            "body": "",
+            "html_url": f"https://github.com/{repo}/releases/tag/{tag_raw}",
+            "installer": {"name":"My-Digi-Setup.exe", "url":installer_url, "size":None, "sha256":checksum},
+            "published_at": None,
+        }, None
 
     tag_raw = str(release.get("tag_name") or "").strip()
     if not tag_raw:
@@ -3478,7 +3529,7 @@ def _github_latest_release():
     if checksum_asset and checksum_asset.get("browser_download_url"):
         try:
             checksum_req = Request(checksum_asset["browser_download_url"], headers={"User-Agent":"My-Digi-Updater/2.1"})
-            with urlopen(checksum_req, timeout=15) as r:
+            with _urlopen_resilient(checksum_req, timeout=15) as r:
                 checksum_text = r.read(4096).decode("ascii", "ignore")
             match = re.search(r"\b[0-9a-fA-F]{64}\b", checksum_text)
             if match:

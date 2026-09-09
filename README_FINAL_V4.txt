@@ -5,6 +5,7 @@ WHAT IS FIXED
 - The official icon is embedded in the EXE, installed beside it, and assigned to Desktop/Start Menu shortcuts.
 - The Desktop shortcut is enabled by default.
 - GitHub Release detection uses the official GitHub Releases API.
+- If the GitHub API or Windows proxy is blocked, update checks retry directly and use the GitHub Releases page as a fallback.
 - The application version and installer version are generated automatically from the release version.
 - The installer and its SHA-256 checksum are published together and verified before an update.
 - Before installation, both the installed application and user data are backed up.

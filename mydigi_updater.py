@@ -1,6 +1,6 @@
 import argparse, hashlib, json, os, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
-from urllib.request import Request, urlopen
+from urllib.request import Request, urlopen, build_opener, ProxyHandler
 
 APP_NAME = "My Digi"
 
@@ -88,7 +88,14 @@ def safe_backup(install_dir, data_dir, version):
 
 def download(url, out):
     req=Request(url,headers={'User-Agent':'My-Digi-Updater/2.0','Accept':'application/octet-stream'})
-    with urlopen(req,timeout=60) as r, open(out,'wb') as f:
+    try:
+        response=urlopen(req,timeout=60)
+    except Exception as first_error:
+        try:
+            response=build_opener(ProxyHandler({})).open(req,timeout=60)
+        except Exception as direct_error:
+            raise RuntimeError(f'دانلود معمول: {first_error} | دانلود مستقیم: {direct_error}') from direct_error
+    with response as r, open(out,'wb') as f:
         while True:
             b=r.read(1024*1024)
             if not b: break
