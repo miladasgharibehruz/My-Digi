@@ -22,7 +22,7 @@ try:
 except ImportError:
     Image = ImageTk = ImageGrab = None
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.0.9"
 UPDATE_REPO = "miladasgharibehruz/My-Digi"  # Built-in fallback; release builds may override this via update_config.json.
 UPDATE_API_BASE = "https://api.github.com"
 APP_DIR = Path(os.environ.get("APPDATA") or Path.home()) / "My Digi"
@@ -3235,24 +3235,33 @@ def _reference_api_action(payload):
             else:
                 try: vals[key] = int(str(v).replace(",", "").replace("٬", ""))
                 except Exception: vals[key] = None if key in ("price", "my_profit") else 0
+        cv = vals.get("commission")
+        if cv in (None, ""):
+            vals["commission"] = None
+        else:
+            try:
+                vals["commission"] = float(str(cv).replace(",", ".").replace("٪", "").replace("%", "").strip())
+            except Exception:
+                vals["commission"] = None
         vals["stock_reliable"] = bool(vals.get("stock_reliable", True))
         vals.setdefault("price_tiers", []); vals.setdefault("notes", ""); vals.setdefault("last_quote", "")
         if pid:
             q = next((x for x in products if str(x.get("id")) == pid), None)
             if not q: raise ValueError("کالا پیدا نشد.")
-            old_price=q.get("price"); old_profit=q.get("my_profit")
+            old_price=q.get("price"); old_profit=q.get("my_profit"); old_commission=q.get("commission")
             q.update(vals); q["id"] = pid
-            price_changed=old_price != q.get("price"); profit_changed=old_profit != q.get("my_profit")
+            price_changed=old_price != q.get("price"); profit_changed=old_profit != q.get("my_profit"); commission_changed=old_commission != q.get("commission")
             if price_changed:
                 q.setdefault("alerts", []).append({"date": today_text(), "type":"price_change", "from":old_price, "to":q.get("price")})
-            if price_changed or profit_changed:
+            if price_changed or profit_changed or commission_changed:
                 _reference_record_snapshot(q, "ویرایش کالا")
-                _reference_mark_product_quotes_done(supplier, pid, "تغییر قیمت یا سود")
-                # Keep a linked monitor product in sync with the explicit reference edit.
+                _reference_mark_product_quotes_done(supplier, pid, "تغییر قیمت، سود یا کمیسیون")
+                # Keep the linked monitor product in sync with explicit reference edits.
                 items=load_products(); linked=next((m for m in items if str(m.get("uuid") or "")==str(q.get("monitor_product_uuid") or "")),None)
                 if linked is not None:
                     if q.get("price") not in (None,""): linked["purchase"]=int(q["price"])
                     if q.get("my_profit") not in (None,""): linked["profit"]=int(q["my_profit"])
+                    linked["commission"]=q.get("commission")
                     save_products(items)
         else:
             vals["id"] = f"prd-{int(datetime.now().timestamp()*1000)}"
@@ -3331,6 +3340,7 @@ def _reference_api_action(payload):
         p["monitor_product_uuid"]=item.get("uuid"); p["monitor_product_id"]=item.get("id") or item.get("product_id")
         if p.get("price") not in (None,""): item["purchase"]=int(p["price"])
         if p.get("my_profit") not in (None,""): item["profit"]=int(p["my_profit"])
+        item["commission"]=p.get("commission")
         item["reference_supplier_ids"]=list(dict.fromkeys((item.get("reference_supplier_ids") or [])+[supplier.get("id")]))
         save_products(items); save_reference(data)
         return {"ok":True,"matched":True,"monitor_uuid":item.get("uuid"),"purchase":item.get("purchase"),"profit":item.get("profit")}
@@ -3344,7 +3354,7 @@ def _reference_api_action(payload):
         if any(str(x.get("id"))==str(product_id) for x in items): return {"ok":False,"message":"این کالا قبلاً در مانیتور وجود دارد."}
         try: title,price,seller,second_price,second_seller,unavailable,image_url=fetch_product(product_id); pending=False
         except Exception: title=f"محصول DKP-{product_id}"; price=None; seller="—"; second_price=None; second_seller="—"; unavailable=False; image_url=None; pending=True
-        item={"uuid":str(uuid.uuid4()),"id":product_id,"url":url,"title":title,"price":price,"seller":seller or "—","second_price":second_price,"second_seller":second_seller or "—","change":"—","change_direction":None,"change_amount":None,"change_at":None,"purchase":p.get("price"),"profit":p.get("my_profit"),"ancillary":0,"commission":None,"status":"⚠ نیاز به بررسی" if pending else ("⚪ ناموجود" if unavailable else "🟢 فعال"),"checked":datetime.now().strftime("%Y/%m/%d %H:%M"),"image_url":image_url,"selected":False,"price_history":([{"date":today_jalali_text(),"price":price}] if price is not None else []),"reference_supplier_ids":[supplier.get("id")]}
+        item={"uuid":str(uuid.uuid4()),"id":product_id,"url":url,"title":title,"price":price,"seller":seller or "—","second_price":second_price,"second_seller":second_seller or "—","change":"—","change_direction":None,"change_amount":None,"change_at":None,"purchase":p.get("price"),"profit":p.get("my_profit"),"ancillary":0,"commission":p.get("commission"),"status":"⚠ نیاز به بررسی" if pending else ("⚪ ناموجود" if unavailable else "🟢 فعال"),"checked":datetime.now().strftime("%Y/%m/%d %H:%M"),"image_url":image_url,"selected":False,"price_history":([{"date":today_jalali_text(),"price":price}] if price is not None else []),"reference_supplier_ids":[supplier.get("id")]}
         items.append(item); p["monitor_product_uuid"]=item["uuid"]; p["monitor_product_id"]=product_id; save_products(items); save_reference(data); return {"ok":True,"uuid":item["uuid"],"pending":pending}
     raise ValueError("عملیات مرجع من شناخته نشد.")
 
@@ -4170,6 +4180,23 @@ class _MyDigiHandler(BaseHTTPRequestHandler):
                         v=data.get(key); item[key]=None if v in (None,"") else int(str(v).replace(",",""))
                 if "commission" in data:
                     v=data.get("commission"); item["commission"]=None if v in (None,"") else float(str(v).replace(",","."))
+
+                # Keep commission in sync with linked "مرجع من" products.
+                if "commission" in data:
+                    try:
+                        ref_data=load_reference()
+                        changed=False
+                        target_uuid=str(item.get("uuid") or "")
+                        for supplier in (ref_data.get("suppliers") or []):
+                            for rp in (supplier.get("products") or []):
+                                if str(rp.get("monitor_product_uuid") or "")==target_uuid:
+                                    rp["commission"]=item.get("commission")
+                                    changed=True
+                        if changed:
+                            save_reference(ref_data)
+                    except Exception:
+                        pass
+
                 save_products(items); return self._json(200,{"ok":True})
             if path=="/api/add":
                 url=str(data.get("url") or "").strip(); pid=extract_id(url)

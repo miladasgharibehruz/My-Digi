@@ -1,0 +1,16 @@
+My Digi V2.0.9
+================
+
+Changes:
+1. Added "کمیسیون (%)" to "مرجع من → کالای جدید".
+2. The same commission field is available when editing a reference product.
+3. Empty commission keeps the existing behavior: the monitor uses the default commission from Settings.
+4. A product-specific commission is used by the same existing Digikala sale-price calculation engine.
+5. Commission stays synchronized between "مرجع من" and the monitor for linked products.
+6. Kept the existing update-progress updater.
+7. Project source/installer version set to 2.0.9.
+
+Important:
+- Replace the corresponding files in the GitHub repository with this package.
+- For the GitHub Actions release workflow, create/push tag v2.0.9 (or run workflow_dispatch with version 2.0.9).
+- The workflow already writes update_config.json for the GitHub release.
