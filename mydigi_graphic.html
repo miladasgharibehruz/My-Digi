@@ -169,7 +169,14 @@ body{font-size:14px}
 @media(max-width:1120px){.reference-layout{grid-template-columns:230px minmax(0,1fr) 230px}.reference-products{grid-template-columns:1fr}.reference-product-search{width:210px}}@media(max-width:900px){.reference-layout{grid-template-columns:1fr}.reference-left,.reference-suppliers{display:none}.reference-products{grid-template-columns:1fr}.reference-form-grid{grid-template-columns:1fr}}
 
 /* ===== Settings ===== */
-.settings-dialog{width:min(900px,92vw);max-height:88vh;overflow:auto}
+.settings-dialog{width:min(900px,92vw);max-height:88vh;overflow:auto;scrollbar-width:thin;scrollbar-color:#35c9f2 #071426;scrollbar-gutter:stable}
+.settings-dialog::-webkit-scrollbar{width:10px;height:10px}
+.settings-dialog::-webkit-scrollbar-track{background:#071426;border-radius:999px;border:1px solid #183652}
+.settings-dialog::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#25d7ff,#526cff);border-radius:999px;border:2px solid #071426;box-shadow:0 0 10px rgba(37,215,255,.28)}
+.settings-dialog::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,#65e7ff,#765fff)}
+.settings-dialog::-webkit-scrollbar-corner{background:#071426}
+#updateConfirmModal{z-index:320!important;background:rgba(1,6,14,.62)}
+#updateConfirmModal .confirm-card{position:relative;z-index:321;box-shadow:0 34px 110px rgba(0,0,0,.72),0 0 0 1px rgba(37,215,255,.1),0 0 38px rgba(37,215,255,.08)}
 .settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
 .settings-section{border:1px solid #1f3958;background:#0a172c;border-radius:11px;padding:13px}
 .settings-section.full{grid-column:1/-1}
@@ -324,7 +331,7 @@ body{font-size:14px}
   <div class="menu-spacer"></div>
   <div class="menu-meta" aria-label="زمان و نسخه">
     <div id="menuClock" class="menu-clock">—</div>
-    <div id="menuVersion" class="menu-version">2.0</div>
+    <div id="menuVersion" class="menu-version">V__APP_VERSION__</div>
   </div>
 </aside>
 <section class="center">

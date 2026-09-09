@@ -16,6 +16,9 @@ WHAT IS FIXED
 - Detailed Inno Setup output is written to: %APPDATA%\My Digi\installer.log
 - If silent installation is aborted, the updater retries with a visible installer instead of silently stopping.
 - The Settings update panel shows whether the last update succeeded or failed.
+- The version badge at the bottom of the main menu is generated dynamically as Vx.y.z from the installed application version.
+- Backup restore/delete and update confirmations always appear above the Settings dialog.
+- The Settings scrollbar now matches the dark cyan/blue My Digi interface.
 - pywebview startup errors are written to: %APPDATA%\My Digi\startup-error.log
 
 HOW TO PUBLISH AN UPDATE
