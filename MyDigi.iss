@@ -1,4 +1,4 @@
-#define MyDigiVersion "2.0.9"
+#define MyDigiVersion "2.0.10"
 [Setup]
 AppId={{B6D2E5D1-8E44-4D73-9A52-6F1F0F5E20A1}
 AppName=My Digi

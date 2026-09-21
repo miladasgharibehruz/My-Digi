@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('mydigi_graphic.html', '.'), ('My Digi.ico', '.')]
+datas = [('mydigi_graphic.html', '.'), ('digicalc.html', '.'), ('My Digi.ico', '.')]
 binaries = []
 hiddenimports = [
     'webview.platforms.edgechromium',
