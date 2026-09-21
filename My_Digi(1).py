@@ -22,7 +22,7 @@ try:
 except ImportError:
     Image = ImageTk = ImageGrab = None
 
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.1.2"
 UPDATE_REPO = "miladasgharibehruz/My-Digi"  # Built-in fallback; release builds may override this via update_config.json.
 UPDATE_API_BASE = "https://api.github.com"
 APP_DIR = Path(os.environ.get("APPDATA") or Path.home()) / "My Digi"
